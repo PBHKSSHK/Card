@@ -1,0 +1,280 @@
+-- ============================================================
+-- CardRecon Migration 06: NetSuite Reference Data
+-- Run in Supabase SQL Editor
+-- ============================================================
+
+-- 1. NetSuite Chart of Accounts
+CREATE TABLE IF NOT EXISTS public.ns_chart_of_accounts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  internal_id INTEGER,
+  account_number TEXT NOT NULL UNIQUE,
+  account_name TEXT NOT NULL,
+  full_name TEXT,  -- parent:child format e.g. "81000000 - Department Cost:81000027 - Computer"
+  account_type TEXT,
+  description TEXT,
+  currency TEXT DEFAULT 'HKD',
+  parent_number TEXT,
+  is_active BOOLEAN DEFAULT true,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- 2. NetSuite Subsidiaries
+CREATE TABLE IF NOT EXISTS public.ns_subsidiaries (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  internal_id INTEGER UNIQUE,
+  name TEXT NOT NULL UNIQUE,
+  short_code TEXT,  -- PBHK, SSHK, CLS, JM, 704, GoAsia
+  intercompany_ar_account TEXT,  -- "Amount Due From X (To PB)" account number
+  intercompany_ap_account TEXT,  -- "Amt Due To PB (from X)" account number
+  intercompany_ar_customer TEXT, -- Customer code for AR e.g. C10000190
+  intercompany_ap_vendor TEXT,   -- Vendor code for AP e.g. V10000353
+  is_active BOOLEAN DEFAULT true,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- 3. NetSuite Departments
+CREATE TABLE IF NOT EXISTS public.ns_departments (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  internal_id INTEGER UNIQUE,
+  name TEXT NOT NULL UNIQUE,
+  is_active BOOLEAN DEFAULT true,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- 4. NetSuite Employees
+CREATE TABLE IF NOT EXISTS public.ns_employees (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  internal_id INTEGER,
+  code TEXT NOT NULL,
+  name TEXT NOT NULL,
+  email TEXT,
+  subsidiary TEXT,
+  department TEXT,
+  is_active BOOLEAN DEFAULT true,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE(code, subsidiary)
+);
+
+-- 5. NetSuite Vendors
+CREATE TABLE IF NOT EXISTS public.ns_vendors (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  code TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  is_intercompany BOOLEAN DEFAULT false,
+  related_subsidiary TEXT,
+  is_active BOOLEAN DEFAULT true,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- 6. NetSuite Customers
+CREATE TABLE IF NOT EXISTS public.ns_customers (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  code TEXT NOT NULL,
+  name TEXT NOT NULL,
+  project_code TEXT,
+  project_name TEXT,
+  subsidiary TEXT,
+  is_intercompany BOOLEAN DEFAULT false,
+  related_subsidiary TEXT,
+  is_active BOOLEAN DEFAULT true,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- 7. Credit Card → NetSuite Account mapping
+CREATE TABLE IF NOT EXISTS public.ns_credit_card_accounts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_number TEXT NOT NULL UNIQUE,
+  account_name TEXT NOT NULL,
+  full_account_name TEXT, -- "34001000 - Business credit card:34001012 - 4150 - HSBC Credit Card (Rex) - PBHK"
+  cardholder_name TEXT,
+  cardholder_employee_code TEXT,
+  card_identifier TEXT,  -- pattern to match from parsed card (e.g. "Rex", "Alex", "Nok", "Kenneth")
+  bank TEXT,
+  subsidiary TEXT DEFAULT 'Photoblog.hk Limited',
+  department TEXT DEFAULT 'Management',
+  currency TEXT DEFAULT 'HKD',
+  is_active BOOLEAN DEFAULT true,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- 8. Add intercompany fields to matching_rules
+ALTER TABLE matching_rules
+  ADD COLUMN IF NOT EXISTS is_intercompany BOOLEAN DEFAULT false,
+  ADD COLUMN IF NOT EXISTS intercompany_account TEXT,
+  ADD COLUMN IF NOT EXISTS subsidiary_name TEXT,
+  ADD COLUMN IF NOT EXISTS ns_department TEXT,
+  ADD COLUMN IF NOT EXISTS ns_name_field TEXT,
+  ADD COLUMN IF NOT EXISTS ns_class TEXT DEFAULT '- No Class -';
+
+-- 9. RLS: all authenticated can read, anon can read
+ALTER TABLE ns_chart_of_accounts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ns_subsidiaries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ns_departments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ns_employees ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ns_vendors ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ns_customers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ns_credit_card_accounts ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "ns_coa_read" ON ns_chart_of_accounts FOR SELECT TO authenticated USING (true);
+CREATE POLICY "ns_coa_write" ON ns_chart_of_accounts FOR ALL TO authenticated USING (true) WITH CHECK (true);
+
+CREATE POLICY "ns_sub_read" ON ns_subsidiaries FOR SELECT TO authenticated USING (true);
+CREATE POLICY "ns_sub_write" ON ns_subsidiaries FOR ALL TO authenticated USING (true) WITH CHECK (true);
+
+CREATE POLICY "ns_dept_read" ON ns_departments FOR SELECT TO authenticated USING (true);
+CREATE POLICY "ns_dept_write" ON ns_departments FOR ALL TO authenticated USING (true) WITH CHECK (true);
+
+CREATE POLICY "ns_emp_read" ON ns_employees FOR SELECT TO authenticated USING (true);
+CREATE POLICY "ns_emp_write" ON ns_employees FOR ALL TO authenticated USING (true) WITH CHECK (true);
+
+CREATE POLICY "ns_vend_read" ON ns_vendors FOR SELECT TO authenticated USING (true);
+CREATE POLICY "ns_vend_write" ON ns_vendors FOR ALL TO authenticated USING (true) WITH CHECK (true);
+
+CREATE POLICY "ns_cust_read" ON ns_customers FOR SELECT TO authenticated USING (true);
+CREATE POLICY "ns_cust_write" ON ns_customers FOR ALL TO authenticated USING (true) WITH CHECK (true);
+
+CREATE POLICY "ns_cc_read" ON ns_credit_card_accounts FOR SELECT TO authenticated USING (true);
+CREATE POLICY "ns_cc_write" ON ns_credit_card_accounts FOR ALL TO authenticated USING (true) WITH CHECK (true);
+
+
+-- Chart of Accounts data
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (630, '11010011', 'Computer Equipments - Cost', '', 'Fixed Asset', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (632, '11010021', 'Furniture and Fixtures - Cost', '', 'Fixed Asset', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (636, '11010041', 'Office Equipment - Cost', '', 'Fixed Asset', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (841, '22005010', 'Prepaid Expenses', '', 'Other Current Asset', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (534, '23001010', 'Accounts Receivable - General', '23000000 - Accounts Receivable:23001010 - Accounts Receivable - General', 'Accounts Receivable', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (843, '24002010', 'Temporary Account', '', 'Other Current Asset', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (844, '25000010', 'Amount Due From Others', '', 'Other Current Asset', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (648, '25000015', 'Amount Due From Social Strategy Hong Kong Ltd. (To PB)', '25000013 - Amount Due From Grouped Company (To PB):25000015 - Amount Due From Social Strategy Hong Kong Ltd. (To PB)', 'Accounts Receivable', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (1168, '25000022', 'Amount Due From CLS Garage (To PB)', '25000013 - Amount Due From Grouped Company (To PB):25000022 - Amount Due From CLS Garage (To PB)', 'Accounts Receivable', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (1169, '25000024', 'Amount Due From Jervois M (To PB)', '25000013 - Amount Due From Grouped Company (To PB):25000024 - Amount Due From Jervois M (To PB)', 'Accounts Receivable', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (1170, '25000025', 'Amount Due From 704 Production (To PB)', '25000013 - Amount Due From Grouped Company (To PB):25000025 - Amount Due From 704 Production (To PB)', 'Accounts Receivable', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (1208, '25000030', 'Amount Due From Jervois Solution', '', 'Other Current Asset', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (1231, '25000031', 'Amount Due From Go Asia Plus Travel (To PB)', '25000013 - Amount Due From Grouped Company (To PB):25000031 - Amount Due From Go Asia Plus Travel (To PB)', 'Accounts Receivable', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (114, '33000010', 'Accounts Payable', '', 'Accounts Payable', 'Unpaid or unapplied vendor bills or credits', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (681, '34001012', '4150 - HSBC Credit Card (Rex) - PBHK', '34001000 - Business credit card:34001012 - 4150 - HSBC Credit Card (Rex) - PBHK', 'Credit Card', 'Rex Wong', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (686, '34001017', '92003 - AE Credit Card (Alex) - PBHK', '34001000 - Business credit card:34001017 - 92003 - AE Credit Card (Alex) - PBHK', 'Credit Card', 'Alex Lo', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (1167, '34001018', 'HSBC Credit Card (Kenneth) - CLS Garage', '34001000 - Business credit card:34001018 - HSBC Credit Card (Kenneth) - CLS Garage', 'Credit Card', 'Kenneth Yung', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (1197, '34001020', 'HSBC Credit Card (Alex) - CLS Garage', '34001000 - Business credit card:34001020 - HSBC Credit Card (Alex) - CLS Garage', 'Credit Card', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (1207, '34001021', '02003 - AE Credit Card (Nok) - PBHK', '34001000 - Business credit card:34001021 - 02003 - AE Credit Card (Nok) - PBHK', 'Credit Card', 'Nok', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (687, '35002014', 'Amt Due To Photoblog.hk Limited (from SSHK)', '35002010 - Amount Due To Photoblog.hk Limited:35002014 - Amt Due To Photoblog.hk Limited (from SSHK)', 'Accounts Payable', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (690, '35002016', 'Amt Due To Photoblog.hk Limited (from CLS Garage)', '35002010 - Amount Due To Photoblog.hk Limited:35002016 - Amt Due To Photoblog.hk Limited (from CLS Garage)', 'Accounts Payable', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (1179, '35002022', 'Amt Due To Photoblog.hk Limited (from JM)', '35002010 - Amount Due To Photoblog.hk Limited:35002022 - Amt Due To Photoblog.hk Limited (from JM)', 'Accounts Payable', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (1184, '35002023', 'Amt Due To Photoblog.hk Limited (from 704 Production)', '35002010 - Amount Due To Photoblog.hk Limited:35002023 - Amt Due To Photoblog.hk Limited (from 704 Production)', 'Accounts Payable', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (1232, '35002024', 'Amt Due To Photoblog.hk Limited (from Go Asia)', '', 'Accounts Payable', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (866, '37001010', 'Accrued Expenses -General', '', 'Other Current Liability', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (314, '64000009', 'Other Income', '', 'Other Income', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (735, '70000012', 'Cost - Advertisement', '70000008 - Cost of Services:70000012 - Cost - Advertisement', 'Cost of Goods Sold', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (737, '70000020', 'Cost - Copywriting &Translation', '', 'Cost of Goods Sold', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (739, '70000028', 'Cost - Make Up & Hair', '', 'Cost of Goods Sold', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (740, '70000032', 'Cost - Others', '70000008 - Cost of Services:70000032 - Cost - Others', 'Cost of Goods Sold', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (741, '70000036', 'Cost - Social Media Management', '', 'Cost of Goods Sold', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (744, '70000048', 'Cost - Travel & Transportation', '70000008 - Cost of Services:70000048 - Cost - Travel & Transportation', 'Cost of Goods Sold', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (746, '70000056', 'Cost - Venue Rental', '', 'Cost of Goods Sold', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (747, '70000060', 'Cost - Photographic & Video Making', '', 'Cost of Goods Sold', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (567, '81000009', 'Advertising & Marketing', '81000000 - Department Cost:81000009 - Advertising & Marketing', 'Expense', 'Advertising, marketing, graphic design', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (571, '81000021', 'Business Registration Fee', '', 'Expense', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (573, '81000027', 'Computer & Computer Accessories', '81000000 - Department Cost:81000027 - Computer & Computer Accessories', 'Expense', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (574, '81000030', 'Consumable Stores', '81000000 - Department Cost:81000030 - Consumable Stores', 'Expense', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (580, '81000048', 'Entertainment', '', 'Expense', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (584, '81000060', 'Motor Vehicle Running Expenses', '', 'Expense', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (1213, '81000064', 'Overseas Travelling', '', 'Expense', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (586, '81000066', 'Postage and Courier', '', 'Expense', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (1158, '81000068', 'Production Management Fee', '', 'Expense', 'Production Management Fee', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (587, '81000069', 'Professional Fee', '', 'Expense', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (589, '81000075', 'Repairs and Maintenance', '', 'Expense', 'Incidental repairs and maintenance of business assets', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (591, '81000081', 'Staff Messing, Training, Welfare', '81000000 - Department Cost:81000081 - Staff Messing, Training, Welfare', 'Expense', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (593, '81000087', 'Stationery and Printing', '81000000 - Department Cost:81000087 - Stationery and Printing', 'Expense', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (594, '81000090', 'Sundry Expenses', '', 'Expense', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (595, '81000093', 'Telephone and Fax', '81000000 - Department Cost:81000093 - Telephone and Fax', 'Expense', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (596, '81000096', 'Travelling & Transportation', '81000000 - Department Cost:81000096 - Travelling & Transportation', 'Expense', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (597, '81000099', 'Website', '81000000 - Department Cost:81000099 - Website', 'Expense', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_chart_of_accounts (internal_id, account_number, account_name, full_name, account_type, description, currency) VALUES (601, '85000002', 'Bank Charges', '', 'Other Expense', '', 'HKD') ON CONFLICT (account_number) DO NOTHING;
+
+-- Subsidiaries data
+INSERT INTO ns_subsidiaries (internal_id, name, short_code, intercompany_ar_account, intercompany_ap_account, intercompany_ar_customer, intercompany_ap_vendor) VALUES (1, 'Photoblog.hk Limited', 'PBHK', NULL, NULL, NULL, NULL) ON CONFLICT (name) DO NOTHING;
+INSERT INTO ns_subsidiaries (internal_id, name, short_code, intercompany_ar_account, intercompany_ap_account, intercompany_ar_customer, intercompany_ap_vendor) VALUES (2, 'Social Strategy Hong Kong Limited', 'SSHK', '25000015', '35002014', 'C10000190', 'V10000353') ON CONFLICT (name) DO NOTHING;
+INSERT INTO ns_subsidiaries (internal_id, name, short_code, intercompany_ar_account, intercompany_ap_account, intercompany_ar_customer, intercompany_ap_vendor) VALUES (5, 'CLS GARAGE', 'CLS', '25000022', '35002016', 'C10000305', 'V10000556') ON CONFLICT (name) DO NOTHING;
+INSERT INTO ns_subsidiaries (internal_id, name, short_code, intercompany_ar_account, intercompany_ap_account, intercompany_ar_customer, intercompany_ap_vendor) VALUES (7, 'Jervois M Limited', 'JM', '25000024', '35002022', 'C10000306', 'V10000615') ON CONFLICT (name) DO NOTHING;
+INSERT INTO ns_subsidiaries (internal_id, name, short_code, intercompany_ar_account, intercompany_ap_account, intercompany_ar_customer, intercompany_ap_vendor) VALUES (8, '704 Production Limited', '704', '25000025', '35002023', 'C10000321', 'V10000662') ON CONFLICT (name) DO NOTHING;
+INSERT INTO ns_subsidiaries (internal_id, name, short_code, intercompany_ar_account, intercompany_ap_account, intercompany_ar_customer, intercompany_ap_vendor) VALUES (99, 'Go Asia Plus Travel & Tours Co. Limited', 'GoAsia', '25000031', '35002024', 'C10000533', NULL) ON CONFLICT (name) DO NOTHING;
+
+-- Departments data
+INSERT INTO ns_departments (internal_id, name) VALUES (3, 'Account Servicing') ON CONFLICT (name) DO NOTHING;
+INSERT INTO ns_departments (internal_id, name) VALUES (6, 'Admin, Finance, HR') ON CONFLICT (name) DO NOTHING;
+INSERT INTO ns_departments (internal_id, name) VALUES (13, 'Commercial Team') ON CONFLICT (name) DO NOTHING;
+INSERT INTO ns_departments (internal_id, name) VALUES (14, 'Creative Team') ON CONFLICT (name) DO NOTHING;
+INSERT INTO ns_departments (internal_id, name) VALUES (10, 'Editorial') ON CONFLICT (name) DO NOTHING;
+INSERT INTO ns_departments (internal_id, name) VALUES (12, 'ePR Team') ON CONFLICT (name) DO NOTHING;
+INSERT INTO ns_departments (internal_id, name) VALUES (11, 'IT Department') ON CONFLICT (name) DO NOTHING;
+INSERT INTO ns_departments (internal_id, name) VALUES (15, 'JM Team') ON CONFLICT (name) DO NOTHING;
+INSERT INTO ns_departments (internal_id, name) VALUES (9, 'Management') ON CONFLICT (name) DO NOTHING;
+INSERT INTO ns_departments (internal_id, name) VALUES (7, 'Monitoring and Seeding') ON CONFLICT (name) DO NOTHING;
+INSERT INTO ns_departments (internal_id, name) VALUES (2, 'Production') ON CONFLICT (name) DO NOTHING;
+INSERT INTO ns_departments (internal_id, name) VALUES (8, 'Sales') ON CONFLICT (name) DO NOTHING;
+INSERT INTO ns_departments (internal_id, name) VALUES (16, 'Travel Agency') ON CONFLICT (name) DO NOTHING;
+
+-- Employees data
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (1868, 'PBL0008', 'Lam, Suk Man Susanna', 'susanna.lam@pbhk.info', 'Photoblog.hk Limited', 'Admin, Finance, HR') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (2937, 'PBT0004', 'Tam, Suet Yee C', '', 'Photoblog.hk Limited', 'Admin, Finance, HR') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (4154, 'PBL0014', 'Lo, Tsz Ching Yannese', 'yannese.lo@pbhk.info', 'Photoblog.hk Limited', 'Admin, Finance, HR') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (106, 'PBC0002', 'Chan, Wai Nok', 'nok@sshk.ltd', 'Photoblog.hk Limited', 'Management') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (122, 'PBW0001', 'Wong, Chi Fung', 'rex@pbhk.info', 'Photoblog.hk Limited', 'Management') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (122, 'PBW0001', 'Wong, Chi Fung', 'rex@sshk.ltd', 'Photoblog.hk Limited : Social Strategy Hong Kong Limited', 'Management') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (122, 'PBW0001', 'Wong, Chi Fung', 'rex@704production.com', 'Photoblog.hk Limited : 704 Production Limited', 'Management') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (116, 'PBL0006', 'Lo, King Yip Alex', 'alex@sshk.ltd', 'Photoblog.hk Limited', 'Management') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (124, 'PBY0002', 'Yung, Hon Yi Kenneth', 'kenneth@clsgarage.com', 'Photoblog.hk Limited', 'Management') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (3647, 'PBY0004', 'Yeung, Wing Chi Gigi', '', 'Photoblog.hk Limited', 'Production') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (3758, 'PBC0009', 'Chan, Ka Yiu Isaac', '', 'Photoblog.hk Limited', 'Production') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (3583, 'PBK0001', 'Kwan, Pui In Maggie', '', 'Photoblog.hk Limited', 'Production') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (111, 'PBL0001', 'Lee, Mei Ching Bella', '', 'Photoblog.hk Limited', 'Production') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (3240, 'CLS0003', 'Ng, Wai Ching Kathy', '', 'Photoblog.hk Limited : CLS GARAGE', 'Sales') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (4642, 'CLC0004', 'Choi, KIT MAN', '', 'Photoblog.hk Limited : CLS GARAGE', 'Sales') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (3043, 'CLS0001', 'Yung, Hon Yi Kenneth', '', 'Photoblog.hk Limited : CLS GARAGE', 'Sales') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (3768, 'CLT0001', 'Tan, Mei Po Mabel', '', 'Photoblog.hk Limited : CLS GARAGE', 'Sales') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (2113, 'PTH0001', 'Ha, Wai Yu', '', 'Photoblog.hk Limited : Jervois M Limited', 'JM Team') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (2869, 'JMT0001', 'Tsang, Yuk Ying Tracy', 'tracy.tsang@sshk.ltd', 'Photoblog.hk Limited : Jervois M Limited', 'JM Team') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (136, 'JML0002', 'Lee, Ka Lun Alex', 'alex.lee@sshk.ltd', 'Photoblog.hk Limited : Jervois M Limited', 'JM Team') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (4307, 'JMH0001', 'Huang, Na Min A', 'ashlee.huang@sshk.ltd', 'Photoblog.hk Limited : Jervois M Limited', 'JM Team') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (4640, 'JML0008', 'LIU, AILIN KIARA', 'ailin.liu@sshk.ltd', 'Photoblog.hk Limited : Jervois M Limited', 'JM Team') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (4641, 'JMG0001', 'Guo, Qian Ying', 'cherry.guo@sshk.ltd', 'Photoblog.hk Limited : Jervois M Limited', 'JM Team') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (3912, 'JMC0003', 'Chung, Ka Lun L', 'larry.chung@sshk.ltd', 'Photoblog.hk Limited : Jervois M Limited', 'JM Team') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (3473, 'JML0006', 'Lui, Hei Man M', '', 'Photoblog.hk Limited : Jervois M Limited', 'Sales') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (3472, 'JMY0002', 'Yeung, Chau Yung Y', '', 'Photoblog.hk Limited : Jervois M Limited', 'Sales') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (2418, 'SSF0001', 'FOK, CHI TO', 'to.fok@sshk.ltd', 'Photoblog.hk Limited : Social Strategy Hong Kong Limited', 'ePR Team') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (3627, 'SSL0031', 'Lung, Yuen Ki Fornia', 'fornia.lung@sshk.ltd', 'Photoblog.hk Limited : Social Strategy Hong Kong Limited', 'ePR Team') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (3598, 'SSL0030', 'Lam, Hing Man', '', 'Photoblog.hk Limited : Social Strategy Hong Kong Limited', 'ePR Team') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (130, 'SSC0003', 'Cheung, Wai Leong', '', 'Photoblog.hk Limited : Social Strategy Hong Kong Limited', 'ePR Team') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (4038, 'SSL0035', 'Leung, Kwai Chun, Jan', '', 'Photoblog.hk Limited : Social Strategy Hong Kong Limited', 'ePR Team') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (4301, 'SSC0019', 'Chu, Kin Keung Teddy', '', 'Photoblog.hk Limited : Social Strategy Hong Kong Limited', 'ePR Team') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (3536, 'SSC0020', 'Cheung, Hei Man, Jamie', '', 'Photoblog.hk Limited : Social Strategy Hong Kong Limited', 'ePR Team') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (4638, 'SSS0002', 'So, Ho Ying, Esther', '', 'Photoblog.hk Limited : Social Strategy Hong Kong Limited', 'ePR Team') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (4639, 'SSY0009', 'Yeh, Hau Suet, Michelle', '', 'Photoblog.hk Limited : Social Strategy Hong Kong Limited', 'ePR Team') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (3535, 'SSL0026', 'Lee, Cheuk Fung, Tomy', 'tomy.lee@sshk.ltd', 'Photoblog.hk Limited : Social Strategy Hong Kong Limited', 'ePR Team') ON CONFLICT (code, subsidiary) DO NOTHING;
+INSERT INTO ns_employees (internal_id, code, name, email, subsidiary, department) VALUES (3756, 'SSP0002', 'Poon, Ho Wan Lionel', '', 'Photoblog.hk Limited : Social Strategy Hong Kong Limited', 'ePR Team') ON CONFLICT (code, subsidiary) DO NOTHING;
+
+-- Vendors data
+INSERT INTO ns_vendors (code, name, is_intercompany, related_subsidiary) VALUES ('V10000014', 'Adobe Systems Software Ireland Ltd', false, NULL) ON CONFLICT (code) DO NOTHING;
+INSERT INTO ns_vendors (code, name, is_intercompany, related_subsidiary) VALUES ('V10000249', 'Shutterstock', false, NULL) ON CONFLICT (code) DO NOTHING;
+INSERT INTO ns_vendors (code, name, is_intercompany, related_subsidiary) VALUES ('V10000353', 'A/P to PB from SSHK', true, 'Social Strategy Hong Kong Limited') ON CONFLICT (code) DO NOTHING;
+INSERT INTO ns_vendors (code, name, is_intercompany, related_subsidiary) VALUES ('V10000373', 'HSBC business card', false, NULL) ON CONFLICT (code) DO NOTHING;
+INSERT INTO ns_vendors (code, name, is_intercompany, related_subsidiary) VALUES ('V10000399', 'Microsoft', false, NULL) ON CONFLICT (code) DO NOTHING;
+INSERT INTO ns_vendors (code, name, is_intercompany, related_subsidiary) VALUES ('V10000556', 'A/P to PB from CLS Garage', true, 'CLS GARAGE') ON CONFLICT (code) DO NOTHING;
+INSERT INTO ns_vendors (code, name, is_intercompany, related_subsidiary) VALUES ('V10000571', 'Hong Kong Domain Name Registration Company Limited', false, NULL) ON CONFLICT (code) DO NOTHING;
+INSERT INTO ns_vendors (code, name, is_intercompany, related_subsidiary) VALUES ('V10000615', 'A/P to PB from JM', true, 'Jervois M Limited') ON CONFLICT (code) DO NOTHING;
+INSERT INTO ns_vendors (code, name, is_intercompany, related_subsidiary) VALUES ('V10000662', 'A/P to PB from 704 Production', true, '704 Production Limited') ON CONFLICT (code) DO NOTHING;
+
+-- Intercompany Customers data
+INSERT INTO ns_customers (code, name, is_intercompany, related_subsidiary) VALUES ('C10000190', 'A/R to PB from SSHK', true, 'Social Strategy Hong Kong Limited') ON CONFLICT DO NOTHING;
+INSERT INTO ns_customers (code, name, is_intercompany, related_subsidiary) VALUES ('C10000305', 'A/R to PB from CLS Garage', true, 'CLS GARAGE') ON CONFLICT DO NOTHING;
+INSERT INTO ns_customers (code, name, is_intercompany, related_subsidiary) VALUES ('C10000306', 'A/R to PB from Jervois M', true, 'Jervois M Limited') ON CONFLICT DO NOTHING;
+INSERT INTO ns_customers (code, name, is_intercompany, related_subsidiary) VALUES ('C10000321', 'A/R to PB from 704 Production', true, '704 Production Limited') ON CONFLICT DO NOTHING;
+INSERT INTO ns_customers (code, name, is_intercompany, related_subsidiary) VALUES ('C10000533', 'A/R to PB from Go Asia', true, 'Go Asia Plus Travel & Tours Co. Limited') ON CONFLICT DO NOTHING;
+INSERT INTO ns_customers (code, name, is_intercompany, related_subsidiary) VALUES ('C10000526', 'Go Asia Plus Travel & Tours Co. Limited', false, NULL) ON CONFLICT DO NOTHING;
+
+-- Credit Card Account mapping
+INSERT INTO ns_credit_card_accounts (account_number, account_name, full_account_name, cardholder_name, cardholder_employee_code, card_identifier, bank, subsidiary) VALUES ('34001012', '4150 - HSBC Credit Card (Rex) - PBHK', '34001000 - Business credit card:34001012 - 4150 - HSBC Credit Card (Rex) - PBHK', 'Wong, Chi Fung', 'PBW0001', 'Rex', 'HSBC', 'Photoblog.hk Limited') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_credit_card_accounts (account_number, account_name, full_account_name, cardholder_name, cardholder_employee_code, card_identifier, bank, subsidiary) VALUES ('34001017', '92003 - AE Credit Card (Alex) - PBHK', '34001000 - Business credit card:34001017 - 92003 - AE Credit Card (Alex) - PBHK', 'Lo, King Yip Alex', 'PBL0006', 'Alex Lo', 'American Express', 'Photoblog.hk Limited') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_credit_card_accounts (account_number, account_name, full_account_name, cardholder_name, cardholder_employee_code, card_identifier, bank, subsidiary) VALUES ('34001018', 'HSBC Credit Card (Kenneth) - CLS Garage', '34001000 - Business credit card:34001018 - HSBC Credit Card (Kenneth) - CLS Garage', 'Yung, Hon Yi Kenneth', 'PBY0002', 'Kenneth', 'HSBC', 'Photoblog.hk Limited') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_credit_card_accounts (account_number, account_name, full_account_name, cardholder_name, cardholder_employee_code, card_identifier, bank, subsidiary) VALUES ('34001020', 'HSBC Credit Card (Alex) - CLS Garage', '34001000 - Business credit card:34001020 - HSBC Credit Card (Alex) - CLS Garage', 'Lo, King Yip Alex', 'PBL0006', 'Alex CLS', 'HSBC', 'Photoblog.hk Limited') ON CONFLICT (account_number) DO NOTHING;
+INSERT INTO ns_credit_card_accounts (account_number, account_name, full_account_name, cardholder_name, cardholder_employee_code, card_identifier, bank, subsidiary) VALUES ('34001021', '02003 - AE Credit Card (Nok) - PBHK', '34001000 - Business credit card:34001021 - 02003 - AE Credit Card (Nok) - PBHK', 'Chan, Wai Nok', 'PBC0002', 'Nok', 'American Express', 'Photoblog.hk Limited') ON CONFLICT (account_number) DO NOTHING;
