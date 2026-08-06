@@ -1,82 +1,44 @@
-# Security remediation — required manual follow-ups
+# Security notes
 
-This branch removes credential leaks and the anon-key backdoor from the
-codebase, but three steps can only be done by a project admin. Do them in
-this order.
+## Current state
 
-## 1. Rotate the 13 leaked passwords (do this first)
+- No anon-key access anywhere: every business table, NetSuite reference
+  table, and SECURITY DEFINER helper function has `anon` explicitly revoked
+  (`supabase/migrations/00000000000009_security_hardening.sql`, plus
+  per-function revokes alongside each function's own migration file). All
+  data access requires a signed-in session.
+- The `parse-document` Edge Function verifies the caller's JWT and rejects
+  anonymous requests (`supabase/functions/parse-document/index.ts`) — the
+  anon key alone cannot burn the project's OpenAI/OpenRouter quota.
+- `user_profiles` self-promotion is blocked: a user can update their own row
+  (e.g. `full_name`), but a trigger (`guard_user_profiles_self_promotion` in
+  `supabase/migrations/00000000000002_auth_and_rbac.sql`) rejects any
+  attempt to change their own `role` or `entity_scope`. Only an
+  `owner`/`admin` can promote another user, via the
+  `user_profiles_admin_write` policy.
+- Claim self-approval is blocked: `enforce_claim_batch_transition()`
+  (`supabase/migrations/00000000000006_claims_system.sql`) rejects a
+  claimant moving their own claim to `team_head_approved`/`approved`/
+  `exported`, even if they also happen to be the assigned team head for
+  their own charge-to code.
+- No plaintext credentials are committed anywhere in this repo or its
+  history — this repo was created fresh from a port of the upstream
+  project, after upstream's own credential-leak remediation.
 
-`supabase/migration_seed_users_with_passwords.sql` (now deleted) and the old
-`passwords.json` contained the plaintext passwords of all 13 user accounts,
-and both are still recoverable from git history. Treat every one of those
-passwords as compromised — especially the 4 `owner` and 2 `admin` accounts.
+## Known limitations (by design, not oversights)
 
-For each user, in Supabase Dashboard → Authentication → Users, either set a
-new random password or use "Send password recovery" so they choose their own.
-If anyone reused their password elsewhere, tell them to change it there too.
+- **Per-user LLM API key** (Settings → AI/API) is stored in the browser's
+  `localStorage` and sent in the OCR request body; it is not moved
+  server-side. If you need centralized key management, set the
+  `OPENAI_API_KEY` Supabase secret instead — the Edge Function falls back to
+  it when no per-user key is supplied.
+- **NetSuite/matching reference data starts empty or partially seeded** —
+  see `supabase/README.md` steps 7–8. This is intentional (see
+  `docs/recon-system-skill/SKILL.md`, "manual operation is intentional"),
+  not a security gap, but an unconfigured `ns_departments.charge_to` mapping
+  means claim routing won't work until an admin fills it in.
 
-## 2. Purge the leaked files from git history
+## Reporting
 
-Deleting the files only removes them from the latest commit. To remove them
-from history (after this branch is merged):
-
-```bash
-pip install git-filter-repo
-git clone --mirror https://github.com/hmkaibot-bot/cardrecon.git
-cd cardrecon.git
-git filter-repo --invert-paths \
-  --path passwords.json \
-  --path supabase/migration_seed_users_with_passwords.sql
-git push --force --mirror https://github.com/hmkaibot-bot/cardrecon.git
-```
-
-Everyone with a local clone must re-clone afterwards. Note: even after the
-purge, anyone who already had repo access may have seen the passwords —
-rotation (step 1) is what actually closes the hole; the purge just stops
-future readers.
-
-## 3. Apply the database fix and redeploy the edge function
-
-```bash
-# Drop the anon full-access policies (run in Supabase SQL editor, or:)
-supabase db execute -f supabase/migration_security_drop_anon_policies.sql
-
-# Deploy the consolidated, auth-protected parse-document function
-supabase functions deploy parse-document
-```
-
-Deploy the edge function and the client (Vercel) together: the new function
-returns 401 to anon-key calls, and the new client always sends the user's
-session token, so a half-deployed state would break document parsing for
-users who are not logged in (which is now intentional).
-
-Also confirm in Vercel that `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`
-are set — the client no longer falls back to a hardcoded project URL.
-
-## What changed in code
-
-- Deleted `supabase/migration_seed_users_with_passwords.sql` (plaintext
-  passwords; re-running it would also have reset users' changed passwords
-  back to the leaked ones). Seed users via Supabase Dashboard invites or the
-  Admin API instead — never commit credentials.
-- Deleted the stale duplicate `edge-function-parse-document.ts`;
-  `supabase/functions/parse-document/index.ts` is now the single source of
-  truth, updated with auto-classify support and JWT verification: only a
-  signed-in user can invoke it (previously anyone with the public anon key
-  could burn the project's OpenAI quota), plus payload size limits.
-- Added `supabase/migration_security_drop_anon_policies.sql`, which drops
-  every `FOR ALL TO anon USING (true)` policy (11 business tables + 7
-  NetSuite reference tables) and revokes anon table privileges. The
-  `CREATE POLICY ... TO anon` lines were also removed from
-  `02_migration_auth_notes_storage.sql`, `06_netsuite_reference_data.sql`
-  and `06a_ddl.sql` so re-running those scripts cannot reintroduce them.
-- Client: `supabase.ts` fails fast instead of falling back to a hardcoded
-  project URL; `document-parser.ts` requires a signed-in session.
-
-## Known remaining risks (not in this fix)
-
-- RLS still lets users self-promote (`users_update_own_profile` allows
-  updating `role`) and claimants self-approve claims — needs a separate
-  RLS/trigger fix.
-- The per-user LLM API key is stored in `localStorage` and sent in the
-  request body; consider moving per-user keys server-side.
+If you find a security issue in this app, do not open a public GitHub issue.
+Contact a project owner/admin directly.

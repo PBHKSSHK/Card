@@ -1,0 +1,25 @@
+-- ============================================================================
+-- CardRecon — consolidated schema rebuild
+-- ============================================================================
+-- This migration set replaces the original repo's 32 hand-run, overlapping
+-- patch files (02_*.sql .. RUN_ME_NOW_*.sql) with a single ordered sequence
+-- that brings a brand-new Supabase project straight to the CURRENT production
+-- end-state — not a replay of every historical fix/revert along the way.
+--
+-- The original history never committed a baseline "01_schema.sql" (the core
+-- tables were created directly against the database), so several tables and
+-- columns below were reconstructed from:
+--   1. shared/schema.ts (the hand-maintained TS type definitions), and
+--   2. an exhaustive static analysis of every supabase.from()/.rpc()/
+--      .storage.from() call across the client and server code,
+-- and cross-checked so every column the app actually reads or writes exists.
+--
+-- Two dead/legacy objects found referenced only inside migration_user_roles.sql
+-- (RLS policies named "statements_select/write" and "transactions_select/write"
+-- on tables literally called "statements" and "transactions") were NOT
+-- reproduced here: no client or server code anywhere in the repo queries
+-- tables by those names, and the app's real equivalents are card_transactions
+-- and upload_batches. They look like leftovers from an earlier naming scheme.
+-- ============================================================================
+
+create extension if not exists pgcrypto;

@@ -1045,7 +1045,7 @@ export default function ReconQueue() {
 
   // batch_id → file_path mapping for invoices
   const batchFileMap = useMemo(() => {
-    const map = new Map<string, { file_path: string; file_name: string }>();
+    const map = new Map<string, { file_path: string | null; file_name: string }>();
     for (const bf of batchFiles || []) {
       map.set(bf.id, { file_path: bf.file_path, file_name: bf.file_name });
     }
@@ -1239,7 +1239,7 @@ export default function ReconQueue() {
   const openInvoicePdf = useCallback(async (batchId: string | null) => {
     if (!batchId) return;
     const bf = batchFileMap.get(batchId);
-    if (!bf) {
+    if (!bf || !bf.file_path) {
       toast({ title: "No file", description: "Original file not found for this invoice.", variant: "destructive" });
       return;
     }
@@ -1966,7 +1966,7 @@ export default function ReconQueue() {
                                           {inv.invoice_date || '—'}
                                         </div>
                                       </td>
-                                      <td className="px-2 py-1.5 text-[11px] font-medium truncate max-w-[130px]" title={inv.invoice_number}>{inv.invoice_number}</td>
+                                      <td className="px-2 py-1.5 text-[11px] font-medium truncate max-w-[130px]" title={inv.invoice_number ?? undefined}>{inv.invoice_number}</td>
                                       <td className={`px-2 py-1.5 text-[11px] text-right tabular-nums font-semibold whitespace-nowrap ${!amtMatch && txn ? 'text-amber-600 dark:text-amber-400' : ''}`}>
                                         <InvAmount inv={inv} />
                                       </td>
@@ -2029,7 +2029,7 @@ export default function ReconQueue() {
                                     <td className="px-2 py-1 text-[10px] tabular-nums whitespace-nowrap text-muted-foreground pl-4">
                                       {child.invoice_date || '—'}
                                     </td>
-                                    <td className="px-2 py-1 text-[10px] text-muted-foreground truncate max-w-[130px]" title={child.invoice_number}>
+                                    <td className="px-2 py-1 text-[10px] text-muted-foreground truncate max-w-[130px]" title={child.invoice_number ?? undefined}>
                                       └ {child.invoice_number}
                                     </td>
                                     <td className="px-2 py-1 text-[10px] text-right tabular-nums text-muted-foreground">
@@ -2182,7 +2182,7 @@ export default function ReconQueue() {
                                         {inv.invoice_date || '—'}
                                       </div>
                                     </td>
-                                    <td className="px-3 py-1.5 text-xs font-medium truncate max-w-[140px]" title={inv.invoice_number}>{inv.invoice_number}</td>
+                                    <td className="px-3 py-1.5 text-xs font-medium truncate max-w-[140px]" title={inv.invoice_number ?? undefined}>{inv.invoice_number}</td>
                                     <td className="px-3 py-1.5 text-xs text-right tabular-nums font-semibold">
                                       <InvAmount inv={inv} />
                                     </td>
@@ -2238,7 +2238,7 @@ export default function ReconQueue() {
                                       <td className="px-3 py-1 text-[11px] tabular-nums whitespace-nowrap text-muted-foreground pl-8">
                                         {child.invoice_date || '—'}
                                       </td>
-                                      <td className="px-3 py-1 text-[11px] text-muted-foreground truncate max-w-[140px]" title={child.invoice_number}>
+                                      <td className="px-3 py-1 text-[11px] text-muted-foreground truncate max-w-[140px]" title={child.invoice_number ?? undefined}>
                                         └ {child.invoice_number}
                                       </td>
                                       <td className="px-3 py-1 text-[11px] text-right tabular-nums text-muted-foreground">

@@ -101,7 +101,7 @@ export interface MatchingRule {
 export interface MetaInvoice {
   id: string;
   batch_id: string | null;
-  invoice_number: string;
+  invoice_number: string | null;
   billing_period: string | null;
   amount: number;
   currency: string;
@@ -124,6 +124,7 @@ export interface MetaInvoice {
   ns_account_number: string | null;
   ns_account_name: string | null;
   card_last4: string | null;
+  notes: string | null;
   created_at: string;
 }
 
@@ -141,8 +142,20 @@ export interface CardTransaction {
   reference: string | null;
   description: string | null;
   card_last4: string | null;
+  cardholder_name: string | null;
   user_id: string | null;
   period_month: string | null;
+  // Manual "Assign" override (AssignModal) — set alongside/instead of the
+  // matching engine's rule-based classification.
+  assigned_entity_code: string | null;
+  assigned_charge_to: string | null;
+  assigned_subsidiary: string | null;
+  assigned_dept_name: string | null;
+  assigned_expense_category: string | null;
+  assigned_ns_account_number: string | null;
+  assigned_ns_account_name: string | null;
+  assigned_note: string | null;
+  assigned_at: string | null;
   created_at: string;
 }
 
@@ -162,14 +175,27 @@ export interface ReconciliationResult {
 export interface AccountingLine {
   id: string;
   transaction_id: string;
-  entity_id: string;
-  department_id: string;
+  entity_id: string | null;
+  department_id: string | null;
   amount_hkd: number;
   split_pct: number;
-  dr_account: string;
-  cr_account: string;
+  dr_account: string | null;
+  cr_account: string | null;
   description: string | null;
   is_confirmed: boolean;
+  // Written by AssignModal/SplitModal, read by Journal Export — coexists
+  // with the legacy entity_id/department_id pair above (both column
+  // families are live; see docs/recon-system-skill for why).
+  ns_entity_code: string | null;
+  ns_charge_to: string | null;
+  ns_subsidiary_name: string | null;
+  ns_dept_name: string | null;
+  ns_account_number: string | null;
+  ns_account_name: string | null;
+  ns_project_code: string | null;
+  ns_project_name: string | null;
+  ns_customer_name: string | null;
+  expense_category: string | null;
   created_at: string;
 }
 
@@ -453,6 +479,8 @@ export interface TransactionFull {
   reference: string | null;
   description: string | null;
   card_last4: string | null;
+  cardholder_name: string | null;
+  period_month: string | null;
   card_bank: string | null;
   card_name: string | null;
   match_status: MatchStatus | null;
