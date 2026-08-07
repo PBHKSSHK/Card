@@ -17,7 +17,7 @@ files, and the build container pulls the real source itself:
   ```json
   {
     "framework": null,
-    "installCommand": "git clone --depth 1 https://github.com/PBHKSSHK/Card.git repo && cd repo && npm install --include=dev",
+    "installCommand": "rm -rf repo && git clone --depth 1 https://github.com/PBHKSSHK/Card.git repo && cd repo && npm install --include=dev",
     "buildCommand": "cp .env.production repo/.env.production && cd repo && npx vite build && git rev-parse HEAD > dist/public/deployed-sha.txt",
     "outputDirectory": "repo/dist/public",
     "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
