@@ -732,17 +732,39 @@ export default function ReconQueue() {
 
   const runEngineMutation = useMutation({
     mutationFn: async () => {
-      const [txnRes, invRes, rulesRes, settingsRes, entRes, deptRes] = await Promise.all([
-        supabase.from("card_transactions").select("*"),
-        supabase.from("meta_invoices").select("*").is("parent_invoice_id", null),
+      // Fix: card_transactions / meta_invoices can exceed PostgREST's 1000-row
+      // response cap. An unbounded select silently truncates at 1000, so the
+      // engine would ignore every transaction/invoice past that and leave them
+      // permanently unmatched. Page through with .range() until a short page.
+      const fetchAll = async (
+        make: (from: number, to: number) => any,
+      ): Promise<any[]> => {
+        const pageSize = 1000;
+        let from = 0;
+        const out: any[] = [];
+        for (;;) {
+          const { data, error } = await make(from, from + pageSize - 1);
+          if (error) throw error;
+          const chunk = data || [];
+          out.push(...chunk);
+          if (chunk.length < pageSize) break;
+          from += pageSize;
+        }
+        return out;
+      };
+
+      const [txnData, invData, rulesRes, settingsRes, entRes, deptRes] = await Promise.all([
+        fetchAll((f, t) => supabase.from("card_transactions").select("*").range(f, t)),
+        fetchAll((f, t) => supabase.from("meta_invoices").select("*").is("parent_invoice_id", null).range(f, t)),
         supabase.from("matching_rules").select("*"),
         supabase.from("journal_settings").select("*").single(),
         supabase.from("entities").select("id, code"),
         supabase.from("departments").select("id, entity_id, code, dr_account"),
       ]);
 
-      if (txnRes.error) throw txnRes.error;
-      if (invRes.error) throw invRes.error;
+      // Keep the { data } shape the rest of this function already expects.
+      const txnRes = { data: txnData, error: null as any };
+      const invRes = { data: invData, error: null as any };
       if (rulesRes.error) throw rulesRes.error;
       if (settingsRes.error) throw settingsRes.error;
 

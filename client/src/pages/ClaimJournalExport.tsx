@@ -166,7 +166,11 @@ export default function ClaimJournalExport() {
       const { data, error } = await supabase
         .from("claim_batches")
         .select("id,batch_no,claim_type,claimant_user_id,full_name,department,submit_date,period_month,charge_to_code,entity_code,subsidiary_full_name,department_name,status,approved_at,exported_at,total_hkd,line_count")
-        .in("status", ["approved", "exported", "team_head_approved"])
+        // Only FINALLY-approved (or already-exported) batches are eligible.
+        // team_head_approved is deliberately excluded: a team-head signature is
+        // not final approval, and posting it would bypass the last human
+        // checkpoint before NetSuite.
+        .in("status", ["approved", "exported"])
         .order("approved_at", { ascending: false });
       if (error) throw error;
       return (data || []) as ClaimBatch[];
@@ -938,7 +942,7 @@ export default function ClaimJournalExport() {
         <CardContent>
           {groupedByBatch.length === 0 && (
             <div className="text-sm text-muted-foreground py-8 text-center">
-              無 approved claim batch (要 status = approved / team_head_approved / exported)
+              無 approved claim batch (要 status = approved / exported)
             </div>
           )}
           {groupedByBatch.map(([batchNo, entries]) => {

@@ -1015,7 +1015,18 @@ export default function NewClaimPage() {
                       </Select>
                     </td>
                     <td className="px-2 py-2">
-                      <Select value={l.currency} onValueChange={(v) => updateLine(l._key, { currency: v })}>
+                      <Select value={l.currency} onValueChange={(v) => {
+                        // Fix: never reuse the previous currency's (stale) rate.
+                        // HKD => rate 1; any other currency => clear rate+HKD and
+                        // refetch live, so a failed fetch forces manual entry
+                        // instead of silently booking foreign spend at 1:1.
+                        if (v === "HKD") {
+                          updateLine(l._key, { currency: v, fx_rate: "1" });
+                        } else {
+                          updateLine(l._key, { currency: v, fx_rate: "", hkd_amount: "" });
+                          fetchFxRate(l._key, v);
+                        }
+                      }}>
                         <SelectTrigger className="h-7 text-xs w-[70px]"><SelectValue /></SelectTrigger>
                         <SelectContent>
                           {CURRENCIES.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
