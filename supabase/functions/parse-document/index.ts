@@ -1,4 +1,5 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "jsr:@supabase/supabase-js@2";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -347,9 +348,22 @@ Deno.serve(async (req: Request) => {
     const body: ParseRequest = await req.json();
     let { type, text, images, file_name, api_key } = body;
 
-    const resolvedKey = api_key
+    let resolvedKey = api_key
       || req.headers.get('x-api-key')
       || Deno.env.get('OPENAI_API_KEY');
+
+    // Fall back to the AI key stored in Supabase Vault (get_ai_api_key RPC,
+    // service_role only) so the whole team can parse without each person
+    // configuring a key in Settings.
+    if (!resolvedKey) {
+      try {
+        const svc = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+        const { data } = await svc.rpc('get_ai_api_key');
+        if (data) resolvedKey = data as string;
+      } catch (e) {
+        console.error('[CardRecon] Vault key lookup failed:', e);
+      }
+    }
 
     if (!resolvedKey) {
       return new Response(
