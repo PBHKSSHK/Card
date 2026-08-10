@@ -130,14 +130,17 @@ function DocumentUploadPanel({ title, description, onSuccess }: {
     },
   });
 
-  // Chart of accounts — used to filter expense categories by selected entity
+  // Account -> entity sharing map — used to filter expense categories by the
+  // selected entity. Sourced from ns_account_subsidiaries (the real NetSuite
+  // many-to-many sharing) rather than ns_chart_of_accounts.entity_code, which
+  // only records a single "home" entity per account and would leave the
+  // Category dropdown empty for entities that share the account (e.g. CLS).
   const { data: chartOfAccounts = [] } = useQuery<{ account_number: string; entity_code: string | null }[]>({
-    queryKey: ["ns_chart_of_accounts_entity_map"],
+    queryKey: ["ns_account_subsidiary_map"],
     queryFn: async () => {
       const { data, error } = await supabase
-        .from("ns_chart_of_accounts")
-        .select("account_number, entity_code")
-        .eq("is_active", true);
+        .from("ns_account_subsidiaries")
+        .select("account_number, entity_code");
       if (error) throw error;
       return data as any[];
     },
@@ -2350,15 +2353,21 @@ async function insertTransactions(batchId: string, transactions: ParsedTransacti
   }
 }
 
-// Resolve NetSuite account code by entity + expense category
-// Falls back to Sundry Expenses (81000090) if category's account not in that entity
+// Resolve the NetSuite account for an expense category.
+//
+// A NetSuite GL account is a single shared record (one internal id) shared
+// across subsidiaries, so the account number is the same regardless of the
+// charge-to entity — we resolve by account_number alone. Which categories are
+// even selectable for a given entity is already constrained upstream in the UI
+// via ns_account_subsidiaries, so there is no need (and it is wrong) to
+// entity-match here or to silently fall back to Sundry Expenses, which would
+// misbook the cost.
 async function resolveAccountCode(
-  chargeToEntity: string | null,
+  _chargeToEntity: string | null,
   categoryKey: string | null
 ): Promise<{ account_number: string | null; account_name: string | null }> {
   if (!categoryKey) return { account_number: null, account_name: null };
 
-  // 1. Lookup base account_number from expense_categories
   const { data: cat } = await supabase
     .from("expense_categories")
     .select("ns_account_number")
@@ -2368,46 +2377,15 @@ async function resolveAccountCode(
   if (!cat) return { account_number: null, account_name: null };
   const baseAcct = (cat as any).ns_account_number as string;
 
-  if (!chargeToEntity) {
-    // No entity selected yet - return the base account without entity match
-    const { data: accAny } = await supabase
-      .from("ns_chart_of_accounts")
-      .select("account_number, account_name")
-      .eq("account_number", baseAcct)
-      .limit(1)
-      .maybeSingle();
-    return {
-      account_number: baseAcct,
-      account_name: (accAny as any)?.account_name ?? null,
-    };
-  }
-
-  // 2. Try to find the account in the selected entity
   const { data: acc } = await supabase
     .from("ns_chart_of_accounts")
     .select("account_number, account_name")
-    .eq("entity_code", chargeToEntity)
     .eq("account_number", baseAcct)
     .maybeSingle();
 
-  if (acc) {
-    return {
-      account_number: (acc as any).account_number,
-      account_name: (acc as any).account_name,
-    };
-  }
-
-  // 3. Fallback to Sundry Expenses (81000090) for this entity
-  const { data: sundry } = await supabase
-    .from("ns_chart_of_accounts")
-    .select("account_number, account_name")
-    .eq("entity_code", chargeToEntity)
-    .eq("account_number", "81000090")
-    .maybeSingle();
-
   return {
-    account_number: (sundry as any)?.account_number ?? "81000090",
-    account_name: (sundry as any)?.account_name ?? "Sundry Expenses",
+    account_number: baseAcct,
+    account_name: (acc as any)?.account_name ?? null,
   };
 }
 

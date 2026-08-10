@@ -613,16 +613,18 @@ export default function ReconQueue() {
     retry: false,
   });
 
-  // Chart of accounts — used to filter expense categories by entity
+  // Account -> entity sharing map — used to filter expense categories by entity.
+  // Sourced from ns_account_subsidiaries (the real NetSuite many-to-many
+  // sharing); ns_chart_of_accounts.entity_code only records one "home" entity
+  // per account and left the Category dropdown empty for shared entities (CLS).
   const { data: chartOfAccounts } = useQuery({
-    queryKey: ["ns-chart-of-accounts-entity-map"],
+    queryKey: ["ns-account-subsidiary-map"],
     queryFn: async () => {
       const { data, error } = await supabase
-        .from("ns_chart_of_accounts")
-        .select("account_number, entity_code")
-        .eq("is_active", true);
+        .from("ns_account_subsidiaries")
+        .select("account_number, entity_code");
       if (error) {
-        console.warn("[ReconQueue] ns_chart_of_accounts unavailable:", error.message);
+        console.warn("[ReconQueue] ns_account_subsidiaries unavailable:", error.message);
         return [] as { account_number: string; entity_code: string | null }[];
       }
       return data as { account_number: string; entity_code: string | null }[];
