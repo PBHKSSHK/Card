@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { runMatchingEngine } from "@/lib/matching-engine";
-import { Play, Search, Filter, Loader2, Calendar, CreditCard, CheckCircle2, AlertCircle, Trash2, FileText, ExternalLink, ChevronDown, ChevronRight, Plus, X, Split as SplitIcon } from "lucide-react";
+import { Play, Search, Filter, Loader2, Calendar, CreditCard, CheckCircle2, AlertCircle, Trash2, FileText, ExternalLink, ChevronDown, ChevronRight, Plus, X, Split as SplitIcon, Unlink } from "lucide-react";
 import AssignModal from "@/components/AssignModal";
 import SplitModal from "@/components/SplitModal";
 import type { TransactionFull, MatchStatus, MetaInvoice, MetaInvoiceSplit, NsProjectCode, ExpenseCategory } from "@shared/schema";
@@ -999,6 +999,85 @@ export default function ReconQueue() {
     },
   });
 
+  // Unmatch (解除配對) — reverse a wrong match WITHOUT deleting the underlying
+  // records: reset the reconciliation link to 'unmatched', clear is_matched on
+  // the invoice, and drop the now-void accounting_lines. Both the CC transaction
+  // and the invoice return to their Unmatched lists and stay re-matchable.
+  const unmatchMutation = useMutation({
+    mutationFn: async (input: { transactionIds?: string[]; invoiceIds?: string[] }) => {
+      const txnIds = Array.from(new Set(input.transactionIds || []));
+      const directInvIds = Array.from(new Set(input.invoiceIds || []));
+
+      // Resolve every reconciliation row involved — by txn and by invoice — so we
+      // capture both sides of each pair before we null out the links.
+      const affectedTxnIds = new Set<string>(txnIds);
+      const affectedInvIds = new Set<string>(directInvIds);
+      const collect = async (col: "transaction_id" | "invoice_id", ids: string[]) => {
+        for (let i = 0; i < ids.length; i += 100) {
+          const chunk = ids.slice(i, i + 100);
+          const { data, error } = await supabase
+            .from("reconciliation_results")
+            .select("transaction_id, invoice_id")
+            .in(col, chunk);
+          if (error) throw error;
+          for (const r of data || []) {
+            if (r.transaction_id) affectedTxnIds.add(r.transaction_id as string);
+            if (r.invoice_id) affectedInvIds.add(r.invoice_id as string);
+          }
+        }
+      };
+      if (txnIds.length) await collect("transaction_id", txnIds);
+      if (directInvIds.length) await collect("invoice_id", directInvIds);
+
+      const allTxn = Array.from(affectedTxnIds);
+      const allInv = Array.from(affectedInvIds);
+
+      // Per transaction: drop the void GL lines, then reset the reconciliation
+      // row to 'unmatched' (kept, not deleted, so "Run engine" still re-processes it).
+      for (let i = 0; i < allTxn.length; i += 50) {
+        const chunk = allTxn.slice(i, i + 50);
+        const alRes = await supabase.from("accounting_lines").delete().in("transaction_id", chunk);
+        if (alRes.error) throw alRes.error;
+        const rrRes = await supabase
+          .from("reconciliation_results")
+          .update({
+            status: "unmatched",
+            invoice_id: null,
+            match_type: null,
+            confidence: null,
+            matched_at: null,
+            matched_by: "user",
+            notes: "Unmatched by user",
+          })
+          .in("transaction_id", chunk);
+        if (rrRes.error) throw rrRes.error;
+      }
+
+      // Return the invoices to the Unmatched list.
+      for (let i = 0; i < allInv.length; i += 50) {
+        const chunk = allInv.slice(i, i + 50);
+        const miRes = await supabase.from("meta_invoices").update({ is_matched: false }).in("id", chunk);
+        if (miRes.error) throw miRes.error;
+      }
+
+      return { txns: allTxn.length, invs: allInv.length };
+    },
+    onSuccess: (res) => {
+      setSelectedIds(new Set());
+      setSelectedInvIds(new Set());
+      setConfirmMassDelete(false);
+      queryClient.invalidateQueries({ queryKey: ["recon-queue"] });
+      queryClient.invalidateQueries({ queryKey: ["invoices-all"] });
+      queryClient.invalidateQueries({ queryKey: ["invoices-children"] });
+      queryClient.invalidateQueries({ queryKey: ["recon-results"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      toast({ title: "已解除配對", description: `${res.txns} 筆交易 · ${res.invs} 張發票 已退回 Unmatched` });
+    },
+    onError: (err: Error) => {
+      toast({ title: "解除配對失敗", description: err.message, variant: "destructive" });
+    },
+  });
+
   const purgeOrphansMutation = useMutation({
     mutationFn: async () => {
       const { data: batches } = await supabase.from("upload_batches").select("id");
@@ -1426,6 +1505,17 @@ export default function ReconQueue() {
     return new Set(Array.from(txnToInvoiceId.values()));
   }, [txnToInvoiceId]);
 
+  // Set of currently-matched transaction IDs (match_status is rr.status via the
+  // view). Used to show the Unmatch action only when the selection actually
+  // contains a matched item.
+  const matchedTxnIdSet = useMemo(() => {
+    const s = new Set<string>();
+    for (const t of transactions || []) {
+      if (t.match_status === "matched" || t.match_status === "manual") s.add(t.transaction_id);
+    }
+    return s;
+  }, [transactions]);
+
   // 4-panel data for card-split view
   const cardPanelData = useMemo(() => {
     const selectedCard = cardFilter !== "all" ? cardFilter : null;
@@ -1517,9 +1607,20 @@ export default function ReconQueue() {
 
   const MassActionBar = () => {
     if (selectedIds.size === 0) return null;
+    const selectedMatchedCount = Array.from(selectedIds).filter(id => matchedTxnIdSet.has(id)).length;
     return (
       <div className="flex items-center gap-3 px-4 py-2.5 bg-destructive/10 border border-destructive/20 rounded-lg">
         <span className="text-sm font-medium">{selectedIds.size} selected</span>
+        {selectedMatchedCount > 0 && !confirmMassDelete && (
+          <Button variant="outline" size="sm" className="h-7 text-xs"
+            disabled={unmatchMutation.isPending}
+            onClick={() => unmatchMutation.mutate({ transactionIds: Array.from(selectedIds) })}
+            data-testid="button-unmatch-selected"
+            title="解除配對，將交易同發票退回 Unmatched（唔會刪除資料）">
+            {unmatchMutation.isPending ? <Loader2 size={12} className="animate-spin mr-1" /> : <Unlink size={12} className="mr-1" />}
+            解除配對 ({selectedMatchedCount})
+          </Button>
+        )}
         {!confirmMassDelete ? (
           <Button variant="destructive" size="sm" className="h-7 text-xs"
             onClick={() => setConfirmMassDelete(true)} data-testid="button-mass-delete">
@@ -2311,6 +2412,16 @@ export default function ReconQueue() {
           <div className="flex items-center justify-between px-6 py-3 max-w-screen-2xl mx-auto">
             <div className="flex items-center gap-3">
               <span className="text-sm font-medium">{selectedInvIds.size} 條 invoice 已選取</span>
+              {Array.from(selectedInvIds).filter(id => matchedInvoiceIds.has(id)).length > 0 && (
+                <Button variant="outline" size="sm" className="text-xs h-7"
+                  disabled={unmatchMutation.isPending}
+                  onClick={() => unmatchMutation.mutate({ invoiceIds: Array.from(selectedInvIds) })}
+                  data-testid="button-unmatch-invoices"
+                  title="解除配對，將發票同對應交易退回 Unmatched（唔會刪除資料）">
+                  {unmatchMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Unlink className="h-3 w-3 mr-1" />}
+                  解除配對
+                </Button>
+              )}
               <Button variant="ghost" size="sm" className="text-xs h-7" onClick={() => setSelectedInvIds(new Set())}>
                 取消選取
               </Button>
