@@ -14,6 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useToast } from "@/hooks/use-toast";
 import { formatCategoryLabel } from "@/lib/utils";
 import { todayHK, currentMonthHK } from "@/lib/hkdate";
+import { useNoLedgerEntities } from "@/hooks/use-no-ledger-entities";
 import type { UploadType, UploadBatch, CardTransaction, MetaInvoice, MatchingRule, ExpenseCategory, NsProjectCode, NsChartOfAccount, NsCreditCardAccount } from "@shared/schema";
 import { MAPPING_TABLE_COLUMN_MAP, projectMatchesEntity, entityMatchesCardSubsidiary } from "@shared/schema";
 
@@ -214,6 +215,10 @@ function DocumentUploadPanel({ title, description, onSuccess }: {
     return chargeToMap.get(code)?.entity_code || "";
   };
 
+  // JS / Go Asia etc. — no independent NetSuite ledger. Journal only books a
+  // "Due From" (AR) for them, so Category is neither shown nor required.
+  const noLedgerEntities = useNoLedgerEntities();
+
   // Credit card accounts — used to associate invoice batches with a specific card
   const { data: creditCardAccounts = [] } = useQuery<NsCreditCardAccount[]>({
     queryKey: ["ns_credit_card_accounts"],
@@ -247,19 +252,23 @@ function DocumentUploadPanel({ title, description, onSuccess }: {
   // 純 CC statement 上載唔受影響。
   const hasInvoicesToImport = mergedInvoices.length > 0 || manualInvoices.length > 0;
   const invoiceMissingCount = useMemo(() => {
+    // JS / Go Asia (no independent NetSuite ledger) are exempt from Category.
+    const catRequired = (entity: string) => !noLedgerEntities.has(entity);
     let missing = 0;
     fileStates.forEach((fs, fileIdx) => {
       if (fs.status !== "done" || fs.result?.type !== "meta_invoice" || !fs.result?.invoices) return;
       fs.result.invoices.forEach((_inv, invIdx) => {
         const e = editedInvoices[`${fileIdx}:${invIdx}`] || {};
-        if (!e.charge_to_code || !e.expense_category || !(e.note && e.note.trim())) missing++;
+        const ent = e.charge_to_entity || entityFromCharge(e.charge_to_code);
+        if (!e.charge_to_code || (catRequired(ent) && !e.expense_category) || !(e.note && e.note.trim())) missing++;
       });
     });
     manualInvoices.forEach((m) => {
-      if (!m.charge_to_code || !m.expense_category || !(m.note && m.note.trim())) missing++;
+      const ent = m.charge_to_entity || entityFromCharge(m.charge_to_code);
+      if (!m.charge_to_code || (catRequired(ent) && !m.expense_category) || !(m.note && m.note.trim())) missing++;
     });
     return missing;
-  }, [fileStates, editedInvoices, manualInvoices]);
+  }, [fileStates, editedInvoices, manualInvoices, noLedgerEntities, chargeToMap]);
   const importBlocked = hasInvoicesToImport && invoiceMissingCount > 0;
 
   // Parse files with concurrency (3 at a time) for speed
@@ -642,22 +651,52 @@ function DocumentUploadPanel({ title, description, onSuccess }: {
     }));
   };
   const addManualInvoice = () => {
-    setManualInvoices((prev) => [
-      ...prev,
-      {
-        invoice_number: "",
-        description: "",
-        invoice_date: todayHK(), // HK-local default date (not UTC)
-        amount: 0,
-        currency: "HKD",
-        charge_to_entity: "",
-        charge_to_code: "",
-        expense_category: "",
-        project_code: "",
-        card_id: "",
-        note: "",
-      },
-    ]);
+    setManualInvoices((prev) => {
+      // req: 手動新增時 copy 上一筆做起點（先取最後一筆手動，冇就取最後一張
+      // 已解析 invoice 連埋佢嘅人手修改），俾同事只改唔同嘅欄位。
+      // Invoice # 同 Amount 留空 — 呢兩樣係每張 invoice 獨有，必須自己入，
+      // 以免照抄變咗重複資料。
+      let seed: Partial<ManualInvoice> = {};
+      if (prev.length > 0) {
+        seed = prev[prev.length - 1];
+      } else {
+        outer: for (let f = fileStates.length - 1; f >= 0; f--) {
+          const fs = fileStates[f];
+          if (fs.status !== "done" || fs.result?.type !== "meta_invoice" || !fs.result.invoices?.length) continue;
+          const invIdx = fs.result.invoices.length - 1;
+          const inv = fs.result.invoices[invIdx];
+          const e = editedInvoices[`${f}:${invIdx}`] || {};
+          seed = {
+            description: e.description ?? inv.description ?? "",
+            invoice_date: e.invoice_date ?? inv.invoice_date ?? "",
+            currency: e.currency ?? inv.currency ?? "HKD",
+            charge_to_code: e.charge_to_code || "",
+            charge_to_entity: e.charge_to_entity || entityFromCharge(e.charge_to_code),
+            expense_category: e.expense_category || "",
+            project_code: e.project_code || "",
+            card_id: e.card_id || "",
+            note: e.note || "",
+          };
+          break outer;
+        }
+      }
+      return [
+        ...prev,
+        {
+          invoice_number: "",
+          description: seed.description || "",
+          invoice_date: seed.invoice_date || todayHK(), // HK-local default date (not UTC)
+          amount: 0,
+          currency: seed.currency || "HKD",
+          charge_to_entity: seed.charge_to_entity || "",
+          charge_to_code: seed.charge_to_code || "",
+          expense_category: seed.expense_category || "",
+          project_code: seed.project_code || "",
+          card_id: seed.card_id || "",
+          note: seed.note || "",
+        },
+      ];
+    });
   };
   const updateManualInvoice = (idx: number, patch: Partial<ManualInvoice>) => {
     setManualInvoices((prev) => prev.map((m, i) => (i === idx ? { ...m, ...patch } : m)));
@@ -1070,6 +1109,15 @@ function DocumentUploadPanel({ title, description, onSuccess }: {
                                       ))}
                                     </SelectContent>
                                   </Select>
+                                  {currentEntity && noLedgerEntities.has(currentEntity) ? (
+                                    <>
+                                      <span className="text-[10px] text-muted-foreground whitespace-nowrap ml-1">Category</span>
+                                      <span className="h-7 inline-flex items-center rounded-md border border-border/60 bg-muted/40 px-2 text-[10px] text-muted-foreground w-48" data-testid={`no-ledger-note-${key}`}>
+                                        {currentEntity} 唔使揀 — 只出 Due From (AR)
+                                      </span>
+                                    </>
+                                  ) : (
+                                  <>
                                   <span className="text-[10px] text-muted-foreground whitespace-nowrap ml-1">Category <span className="text-destructive">*</span></span>
                                   <Select value={currentCategory} onValueChange={(v) => updateInvoiceEdit(fileIdx, invIdx, { expense_category: v })}>
                                     <SelectTrigger className={`h-7 text-xs w-48 ${!currentCategory ? "border-destructive/70" : ""}`} data-testid={`select-category-${key}`}>
@@ -1086,6 +1134,8 @@ function DocumentUploadPanel({ title, description, onSuccess }: {
                                       ))}
                                     </SelectContent>
                                   </Select>
+                                  </>
+                                  )}
                                 </div>
                               </td>
                             </tr>,
@@ -1326,6 +1376,15 @@ function DocumentUploadPanel({ title, description, onSuccess }: {
                                   ))}
                                 </SelectContent>
                               </Select>
+                              {m.charge_to_entity && noLedgerEntities.has(m.charge_to_entity) ? (
+                                <>
+                                  <span className="text-[10px] text-muted-foreground whitespace-nowrap ml-1">Category</span>
+                                  <span className="h-7 inline-flex items-center rounded-md border border-border/60 bg-muted/40 px-2 text-[10px] text-muted-foreground w-48" data-testid={`no-ledger-note-manual-${mIdx}`}>
+                                    {m.charge_to_entity} 唔使揀 — 只出 Due From (AR)
+                                  </span>
+                                </>
+                              ) : (
+                              <>
                               <span className="text-[10px] text-muted-foreground whitespace-nowrap ml-1">Category <span className="text-destructive">*</span></span>
                               <Select value={m.expense_category} onValueChange={(v) => updateManualInvoice(mIdx, { expense_category: v })}>
                                 <SelectTrigger className={`h-7 text-xs w-48 ${!m.expense_category ? "border-destructive/70" : ""}`} data-testid={`select-manual-category-${mIdx}`}>
@@ -1342,6 +1401,8 @@ function DocumentUploadPanel({ title, description, onSuccess }: {
                                   ))}
                                 </SelectContent>
                               </Select>
+                              </>
+                              )}
                             </div>
                           </td>
                         </tr>

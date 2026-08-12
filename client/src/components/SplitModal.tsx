@@ -13,6 +13,7 @@ import { round2, sum2 } from "@/lib/money";
 import { Plus, Trash2, Loader2, AlertCircle } from "lucide-react";
 import type { TransactionFull, ExpenseCategory, NsProjectCode } from "@shared/schema";
 import { projectMatchesEntity } from "@shared/schema";
+import { useNoLedgerEntities } from "@/hooks/use-no-ledger-entities";
 
 interface NsDepartment {
   id: string;
@@ -45,6 +46,10 @@ export default function SplitModal({ transaction, onClose, onSaved }: Props) {
     { entityCode: "", chargeTo: "", expenseCategory: "", projectCode: "", amount: totalAmount, pct: 100 },
   ]);
   const { toast } = useToast();
+
+  // JS / Go Asia etc. — no independent NetSuite ledger, so no Category is asked
+  // for those lines (journal only books a "Due From" AR).
+  const noLedgerEntities = useNoLedgerEntities();
 
   // Load NetSuite departments (entity + charge_to + dept name)
   const { data: nsDepartments = [] } = useQuery<NsDepartment[]>({
@@ -126,6 +131,10 @@ export default function SplitModal({ transaction, onClose, onSaved }: Props) {
       const curProj = projectCodes.find(p => p.project_id === updated[index].projectCode);
       if (curProj && !projectMatchesEntity(curProj, value)) {
         updated[index].projectCode = "";
+      }
+      // No-ledger entity (JS / Go Asia) — Category doesn't apply, clear any pick
+      if (noLedgerEntities.has(value)) {
+        updated[index].expenseCategory = "";
       }
     } else if (field === "projectCode") {
       // Category set depends on project selection ([Project] 7xxxx vs overhead) —
@@ -311,6 +320,11 @@ export default function SplitModal({ transaction, onClose, onSaved }: Props) {
                     </div>
                     <div className="col-span-2">
                       <Label className="text-xs">Expense Category (optional)</Label>
+                      {line.entityCode && noLedgerEntities.has(line.entityCode) ? (
+                        <div className="h-8 flex items-center rounded-md border border-border/60 bg-muted/40 px-2.5 text-[11px] text-muted-foreground" data-testid={`split-no-ledger-${i}`}>
+                          {line.entityCode} 喺 NetSuite 冇獨立 ledger — 唔使揀 Category（只出 Due From AR）
+                        </div>
+                      ) : (
                       <Select
                         value={line.expenseCategory || undefined}
                         onValueChange={v => updateLine(i, "expenseCategory", v)}
@@ -329,6 +343,7 @@ export default function SplitModal({ transaction, onClose, onSaved }: Props) {
                           ))}
                         </SelectContent>
                       </Select>
+                      )}
                     </div>
                     <div>
                       <Label className="text-xs">Amount (HKD)</Label>

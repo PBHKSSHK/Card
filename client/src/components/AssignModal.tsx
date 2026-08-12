@@ -13,6 +13,7 @@ import { formatCategoryLabel } from "@/lib/utils";
 import { Loader2, Search, X } from "lucide-react";
 import type { TransactionFull, ExpenseCategory, MetaInvoice, NsProjectCode } from "@shared/schema";
 import { projectMatchesEntity } from "@shared/schema";
+import { useNoLedgerEntities } from "@/hooks/use-no-ledger-entities";
 
 interface Props {
   transaction: TransactionFull;
@@ -84,26 +85,8 @@ export default function AssignModal({ transaction, onClose, onSaved }: Props) {
     },
   });
 
-  // Entities with NO independent NetSuite ledger (e.g. JS / Go Asia): has_payable_side is
-  // false but an AR account exists — the card only books a "Due From" (AR) for them, so no
-  // expense account (Category) is needed. The cardholder entity itself has no AR code, so
-  // it's excluded and still needs a Category for its own expenses.
-  const { data: icLedgerRows = [] } = useQuery<{ entity_code: string; has_payable_side: boolean; ar_account_code: string | null }[]>({
-    queryKey: ["ns_intercompany_accounts_assign"],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from("ns_intercompany_accounts")
-        .select("entity_code, has_payable_side, ar_account_code");
-      if (error) return [];
-      return (data || []) as { entity_code: string; has_payable_side: boolean; ar_account_code: string | null }[];
-    },
-    retry: false,
-  });
-  const noLedgerEntities = useMemo(() => {
-    const s = new Set<string>();
-    for (const a of icLedgerRows) if (!a.has_payable_side && a.ar_account_code) s.add(a.entity_code);
-    return s;
-  }, [icLedgerRows]);
+  // JS / Go Asia etc. — no independent NetSuite ledger, Category not asked for.
+  const noLedgerEntities = useNoLedgerEntities();
 
   // Load unmatched invoices (preferably same month)
   const txnMonth = transaction.txn_date?.slice(0, 7); // YYYY-MM

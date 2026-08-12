@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { runMatchingEngine } from "@/lib/matching-engine";
+import { useNoLedgerEntities } from "@/hooks/use-no-ledger-entities";
 import { Play, Search, Filter, Loader2, Calendar, CreditCard, CheckCircle2, AlertCircle, Trash2, FileText, ExternalLink, ChevronDown, ChevronRight, Plus, X, Split as SplitIcon, Unlink, Link2 } from "lucide-react";
 import AssignModal from "@/components/AssignModal";
 import SplitModal from "@/components/SplitModal";
@@ -79,6 +80,9 @@ function ChildInvoiceFields({
   // categories so the user is never stuck with an empty dropdown.
   const entityMatched = allowed ? expenseCategories.filter(c => allowed.has(c.ns_account_number)) : [];
   const filteredCategories = allowed && entityMatched.length > 0 ? entityMatched : expenseCategories;
+  // JS / Go Asia — no independent NetSuite ledger, Category doesn't apply.
+  const noLedgerEntities = useNoLedgerEntities();
+  const isNoLedger = !!child.charge_to_entity && noLedgerEntities.has(child.charge_to_entity);
   // Stop row-level click bubbling for the whole cell so Radix Select's portal close doesn't trigger a parent row toggle.
   const stop = (e: React.MouseEvent | React.PointerEvent) => e.stopPropagation();
   return (
@@ -129,6 +133,12 @@ function ChildInvoiceFields({
         </Select>
       </td>
       <td className="px-1 py-0.5" onClick={stop} onPointerDown={stop}>
+        {isNoLedger ? (
+          <span className="inline-flex h-6 items-center rounded border border-border/50 bg-muted/40 px-1.5 text-[9px] text-muted-foreground whitespace-nowrap"
+            title={`${child.charge_to_entity} 喺 NetSuite 冇獨立 ledger — 唔使揀 Category（只出 Due From AR）`}>
+            唔使 — Due From
+          </span>
+        ) : (
         <Select
           value={child.expense_category || "__none__"}
           onValueChange={(v) => {
@@ -149,6 +159,7 @@ function ChildInvoiceFields({
             {filteredCategories.map(c => <SelectItem key={c.id} value={c.category_key}>{formatCategoryLabel(c.label_zh, c.ns_account_number)} · {c.ns_account_number}</SelectItem>)}
           </SelectContent>
         </Select>
+        )}
       </td>
     </>
   );
@@ -212,6 +223,8 @@ function InvoiceSplitEditor({
   // Fallback to showing all categories if filter yields empty set
   const entityMatched = allowedAccts ? expenseCategories.filter(c => allowedAccts.has(c.ns_account_number)) : [];
   const filteredCategories = allowedAccts && entityMatched.length > 0 ? entityMatched : expenseCategories;
+  // JS / Go Asia — no independent NetSuite ledger, Category doesn't apply.
+  const noLedgerEntities = useNoLedgerEntities();
 
   return (
     <tr className="bg-muted/20 border-b border-border/50">
@@ -350,6 +363,11 @@ function InvoiceSplitEditor({
               </SelectContent>
             </Select>
             <span className="font-medium text-muted-foreground ml-3">Expense:</span>
+            {inv.charge_to_entity && noLedgerEntities.has(inv.charge_to_entity) ? (
+              <span className="inline-flex h-7 items-center rounded-md border border-border/60 bg-muted/40 px-2 text-[10px] text-muted-foreground">
+                {inv.charge_to_entity} 唔使揀 Category — NetSuite 冇獨立 ledger，只出 Due From (AR)
+              </span>
+            ) : (
             <Select
               value={inv.expense_category || "__none__"}
               onValueChange={(v) => {
@@ -380,6 +398,7 @@ function InvoiceSplitEditor({
                 ))}
               </SelectContent>
             </Select>
+            )}
           </div>
 
           {/* Splits heading */}
