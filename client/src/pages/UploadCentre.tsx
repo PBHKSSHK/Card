@@ -269,7 +269,47 @@ function DocumentUploadPanel({ title, description, onSuccess }: {
     });
     return missing;
   }, [fileStates, editedInvoices, manualInvoices, noLedgerEntities, chargeToMap]);
-  const importBlocked = hasInvoicesToImport && invoiceMissingCount > 0;
+
+  // req: 一張 invoice 可以分拆做幾行（手動新增 copy 埋 Invoice #）——
+  // 同一個 Invoice # 嘅所有行金額加埋，必須等於原本（OCR）嘅 invoice 總額。
+  // Target = 該 Invoice # 已解析行嘅「原始 OCR 金額」總和；只喺有手動行
+  // 掛落去嗰啲 Invoice # 先至驗證（純手動、冇對應 OCR 嘅唔驗 — 冇基準）。
+  const splitMismatches = useMemo(() => {
+    type G = { target: number; sum: number; parsedCount: number; manualCount: number };
+    const groups = new Map<string, G>();
+    const get = (n: string): G => {
+      if (!groups.has(n)) groups.set(n, { target: 0, sum: 0, parsedCount: 0, manualCount: 0 });
+      return groups.get(n)!;
+    };
+    fileStates.forEach((fs, fileIdx) => {
+      if (fs.status !== "done" || fs.result?.type !== "meta_invoice" || !fs.result?.invoices) return;
+      fs.result.invoices.forEach((inv, invIdx) => {
+        const e = editedInvoices[`${fileIdx}:${invIdx}`] || {};
+        const n = (e.invoice_number ?? inv.invoice_number ?? "").trim();
+        if (!n) return;
+        const g = get(n);
+        g.parsedCount++;
+        g.target += Number(inv.amount) || 0;               // 原始 OCR 金額做基準
+        g.sum += Number(e.amount ?? inv.amount) || 0;      // 現時(可能已改)金額
+      });
+    });
+    manualInvoices.forEach((m) => {
+      const n = (m.invoice_number || "").trim();
+      if (!n) return;
+      const g = get(n);
+      g.manualCount++;
+      g.sum += Number(m.amount) || 0;
+    });
+    const out: { invoice_number: string; sum: number; target: number }[] = [];
+    groups.forEach((g, n) => {
+      if (g.manualCount > 0 && g.parsedCount > 0 && Math.abs(g.sum - g.target) > 0.01) {
+        out.push({ invoice_number: n, sum: Math.round(g.sum * 100) / 100, target: Math.round(g.target * 100) / 100 });
+      }
+    });
+    return out;
+  }, [fileStates, editedInvoices, manualInvoices]);
+
+  const importBlocked = hasInvoicesToImport && (invoiceMissingCount > 0 || splitMismatches.length > 0);
 
   // Parse files with concurrency (3 at a time) for speed
   const parseAllFiles = async (files: File[]) => {
@@ -654,8 +694,9 @@ function DocumentUploadPanel({ title, description, onSuccess }: {
     setManualInvoices((prev) => {
       // req: 手動新增時 copy 上一筆做起點（先取最後一筆手動，冇就取最後一張
       // 已解析 invoice 連埋佢嘅人手修改），俾同事只改唔同嘅欄位。
-      // Invoice # 同 Amount 留空 — 呢兩樣係每張 invoice 獨有，必須自己入，
-      // 以免照抄變咗重複資料。
+      // Invoice # 都會 copy — 用嚟將一張 invoice 分拆做幾行；
+      // Amount 預設帶入「剩餘金額」（原本 invoice 總額 − 已入行嘅金額加埋），
+      // 咁全部行加埋就啱啱等於 invoice 總額。
       let seed: Partial<ManualInvoice> = {};
       if (prev.length > 0) {
         seed = prev[prev.length - 1];
@@ -667,6 +708,7 @@ function DocumentUploadPanel({ title, description, onSuccess }: {
           const inv = fs.result.invoices[invIdx];
           const e = editedInvoices[`${f}:${invIdx}`] || {};
           seed = {
+            invoice_number: (e.invoice_number ?? inv.invoice_number ?? "") as string,
             description: e.description ?? inv.description ?? "",
             invoice_date: e.invoice_date ?? inv.invoice_date ?? "",
             currency: e.currency ?? inv.currency ?? "HKD",
@@ -680,13 +722,36 @@ function DocumentUploadPanel({ title, description, onSuccess }: {
           break outer;
         }
       }
+
+      // 計「剩餘金額」：同一 Invoice # — 原始 OCR 總額 − (已解析行現時金額 + 已有手動行金額)
+      const seedNo = (seed.invoice_number || "").trim();
+      let remaining = 0;
+      if (seedNo) {
+        let target = 0;
+        let current = 0;
+        fileStates.forEach((fs, fileIdx) => {
+          if (fs.status !== "done" || fs.result?.type !== "meta_invoice" || !fs.result?.invoices) return;
+          fs.result.invoices.forEach((inv, invIdx) => {
+            const e = editedInvoices[`${fileIdx}:${invIdx}`] || {};
+            const n = (e.invoice_number ?? inv.invoice_number ?? "").trim();
+            if (n !== seedNo) return;
+            target += Number(inv.amount) || 0;
+            current += Number(e.amount ?? inv.amount) || 0;
+          });
+        });
+        prev.forEach((m) => {
+          if ((m.invoice_number || "").trim() === seedNo) current += Number(m.amount) || 0;
+        });
+        remaining = Math.round((target - current) * 100) / 100;
+      }
+
       return [
         ...prev,
         {
-          invoice_number: "",
+          invoice_number: seed.invoice_number || "",
           description: seed.description || "",
           invoice_date: seed.invoice_date || todayHK(), // HK-local default date (not UTC)
-          amount: 0,
+          amount: remaining > 0 ? remaining : 0,
           currency: seed.currency || "HKD",
           charge_to_entity: seed.charge_to_entity || "",
           charge_to_code: seed.charge_to_code || "",
@@ -1449,8 +1514,17 @@ function DocumentUploadPanel({ title, description, onSuccess }: {
                   </Button>
                   <Button variant="outline" onClick={reset}>Cancel</Button>
                   {importBlocked && (
-                    <span className="text-xs text-destructive flex items-center gap-1" data-testid="import-blocked-reason">
-                      <AlertCircle size={14} /> 仲有 {invoiceMissingCount} 張 invoice 未填齊 Charge To / Category / 備註
+                    <span className="text-xs text-destructive flex flex-col gap-0.5" data-testid="import-blocked-reason">
+                      {invoiceMissingCount > 0 && (
+                        <span className="flex items-center gap-1">
+                          <AlertCircle size={14} /> 仲有 {invoiceMissingCount} 張 invoice 未填齊 Charge To / Category / 備註
+                        </span>
+                      )}
+                      {splitMismatches.map((g) => (
+                        <span key={g.invoice_number} className="flex items-center gap-1">
+                          <AlertCircle size={14} /> {g.invoice_number} 分拆金額加埋 {g.sum.toLocaleString()} ≠ invoice 總額 {g.target.toLocaleString()}
+                        </span>
+                      ))}
                     </span>
                   )}
                 </div>
