@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { runMatchingEngine } from "@/lib/matching-engine";
-import { Play, Search, Filter, Loader2, Calendar, CreditCard, CheckCircle2, AlertCircle, Trash2, FileText, ExternalLink, ChevronDown, ChevronRight, Plus, X, Split as SplitIcon, Unlink } from "lucide-react";
+import { Play, Search, Filter, Loader2, Calendar, CreditCard, CheckCircle2, AlertCircle, Trash2, FileText, ExternalLink, ChevronDown, ChevronRight, Plus, X, Split as SplitIcon, Unlink, Link2 } from "lucide-react";
 import AssignModal from "@/components/AssignModal";
 import SplitModal from "@/components/SplitModal";
 import type { TransactionFull, MatchStatus, MetaInvoice, MetaInvoiceSplit, NsProjectCode, ExpenseCategory } from "@shared/schema";
@@ -1078,6 +1078,66 @@ export default function ReconQueue() {
     },
   });
 
+  // Manual pair (手動配對) — link ONE selected unmatched CC transaction to ONE
+  // selected unmatched invoice. Mirrors AssignModal's invoice-link write path:
+  // rr row → matched/manual, invoice → is_matched + bank's HKD figure.
+  const manualPairMutation = useMutation({
+    mutationFn: async (input: { txnId: string; invoiceId: string }) => {
+      const txn = (transactions || []).find(t => t.transaction_id === input.txnId);
+      const bankHkd = txn ? Math.abs(Number(txn.amount_hkd) || Number(txn.amount) || 0) : 0;
+
+      const { data: existing, error: exErr } = await supabase
+        .from("reconciliation_results")
+        .select("id")
+        .eq("transaction_id", input.txnId)
+        .maybeSingle();
+      if (exErr) throw exErr;
+
+      const payload: any = {
+        transaction_id: input.txnId,
+        invoice_id: input.invoiceId,
+        status: "matched",
+        match_type: "manual",
+        confidence: 100,
+        matched_at: new Date().toISOString(),
+        matched_by: "user",
+        notes: "Manual pair",
+      };
+      if (existing?.id) {
+        const { data: upd, error } = await supabase
+          .from("reconciliation_results").update(payload).eq("id", existing.id).select();
+        if (error) throw error;
+        if (!upd || upd.length === 0) throw new Error("Update affected 0 rows (RLS?)");
+      } else {
+        const { data: ins, error } = await supabase
+          .from("reconciliation_results").insert(payload).select();
+        if (error) throw error;
+        if (!ins || ins.length === 0) throw new Error("Insert affected 0 rows (RLS?)");
+      }
+
+      // Mark invoice matched; the CC statement's HKD figure is the source of truth.
+      const invoicePatch: Record<string, any> = { is_matched: true };
+      if (bankHkd > 0) invoicePatch.amount_hkd = bankHkd;
+      const { data: invUpd, error: invErr } = await supabase
+        .from("meta_invoices").update(invoicePatch).eq("id", input.invoiceId).select();
+      if (invErr) throw invErr;
+      if (!invUpd || invUpd.length === 0) throw new Error("Invoice update affected 0 rows (RLS?)");
+    },
+    onSuccess: () => {
+      setSelectedIds(new Set());
+      setSelectedInvIds(new Set());
+      queryClient.invalidateQueries({ queryKey: ["recon-queue"] });
+      queryClient.invalidateQueries({ queryKey: ["invoices-all"] });
+      queryClient.invalidateQueries({ queryKey: ["invoices-children"] });
+      queryClient.invalidateQueries({ queryKey: ["recon-results"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      toast({ title: "已配對", description: "交易同發票已手動配對，移到 Matched。" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "配對失敗", description: err.message, variant: "destructive" });
+    },
+  });
+
   const purgeOrphansMutation = useMutation({
     mutationFn: async () => {
       const { data: batches } = await supabase.from("upload_batches").select("id");
@@ -1605,12 +1665,32 @@ export default function ReconQueue() {
 
   // ---- Sub-components ----
 
+  // 手動配對 — enabled when exactly ONE unmatched CC txn + ONE unmatched invoice
+  // are ticked. Rendered in both action bars.
+  const ManualPairButton = () => {
+    if (selectedIds.size !== 1 || selectedInvIds.size !== 1) return null;
+    const txnId = Array.from(selectedIds)[0];
+    const invId = Array.from(selectedInvIds)[0];
+    if (matchedTxnIdSet.has(txnId) || matchedInvoiceIds.has(invId)) return null;
+    return (
+      <Button size="sm" className="h-7 text-xs"
+        disabled={manualPairMutation.isPending}
+        onClick={() => manualPairMutation.mutate({ txnId, invoiceId: invId })}
+        data-testid="button-manual-pair"
+        title="將已選嘅 1 筆 CC 交易同 1 張發票直接配對">
+        {manualPairMutation.isPending ? <Loader2 size={12} className="animate-spin mr-1" /> : <Link2 size={12} className="mr-1" />}
+        手動配對
+      </Button>
+    );
+  };
+
   const MassActionBar = () => {
     if (selectedIds.size === 0) return null;
     const selectedMatchedCount = Array.from(selectedIds).filter(id => matchedTxnIdSet.has(id)).length;
     return (
       <div className="flex items-center gap-3 px-4 py-2.5 bg-destructive/10 border border-destructive/20 rounded-lg">
         <span className="text-sm font-medium">{selectedIds.size} selected</span>
+        <ManualPairButton />
         {selectedMatchedCount > 0 && !confirmMassDelete && (
           <Button variant="outline" size="sm" className="h-7 text-xs"
             disabled={unmatchMutation.isPending}
@@ -2412,6 +2492,7 @@ export default function ReconQueue() {
           <div className="flex items-center justify-between px-6 py-3 max-w-screen-2xl mx-auto">
             <div className="flex items-center gap-3">
               <span className="text-sm font-medium">{selectedInvIds.size} 條 invoice 已選取</span>
+              <ManualPairButton />
               {Array.from(selectedInvIds).filter(id => matchedInvoiceIds.has(id)).length > 0 && (
                 <Button variant="outline" size="sm" className="text-xs h-7"
                   disabled={unmatchMutation.isPending}

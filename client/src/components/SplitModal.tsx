@@ -127,10 +127,21 @@ export default function SplitModal({ transaction, onClose, onSaved }: Props) {
       if (curProj && !projectMatchesEntity(curProj, value)) {
         updated[index].projectCode = "";
       }
+    } else if (field === "projectCode") {
+      // Category set depends on project selection ([Project] 7xxxx vs overhead) —
+      // drop a previously-picked category that no longer fits.
+      const cat = expenseCategories.find(c => c.category_key === updated[index].expenseCategory);
+      if (cat && (!!value !== (cat.ns_account_number || "").startsWith("7"))) {
+        updated[index].expenseCategory = "";
+      }
     }
 
     setLines(updated);
   };
+
+  // req: with a Project Code → only [Project] categories (account 7xxxx);
+  // without → only non-[Project] categories. Same rule as Upload Centre / Assign.
+  const isProjectCat = (c: ExpenseCategory) => (c.ns_account_number || "").startsWith("7");
 
   const totalSplit = lines.reduce((s, l) => s + l.amount, 0);
   const isBalanced = Math.abs(totalSplit - totalAmount) < 0.01;
@@ -278,24 +289,6 @@ export default function SplitModal({ transaction, onClose, onSaved }: Props) {
                       </Select>
                     </div>
                     <div className="col-span-2">
-                      <Label className="text-xs">Expense Category (optional)</Label>
-                      <Select
-                        value={line.expenseCategory || undefined}
-                        onValueChange={v => updateLine(i, "expenseCategory", v)}
-                      >
-                        <SelectTrigger className="h-8 text-sm" data-testid={`split-category-${i}`}>
-                          <SelectValue placeholder="Pick GL account..." />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {expenseCategories.map(c => (
-                            <SelectItem key={c.category_key} value={c.category_key}>
-                              {formatCategoryLabel(c.label_zh || c.label_en, c.ns_account_number)}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="col-span-2">
                       <Label className="text-xs">Project Code (optional)</Label>
                       <Select
                         value={line.projectCode || "__none__"}
@@ -311,6 +304,27 @@ export default function SplitModal({ transaction, onClose, onSaved }: Props) {
                           ) : filteredProjects.map(p => (
                             <SelectItem key={p.id} value={p.project_id}>
                               {p.project_id} · {p.project_name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="col-span-2">
+                      <Label className="text-xs">Expense Category (optional)</Label>
+                      <Select
+                        value={line.expenseCategory || undefined}
+                        onValueChange={v => updateLine(i, "expenseCategory", v)}
+                      >
+                        <SelectTrigger className="h-8 text-sm" data-testid={`split-category-${i}`}>
+                          <SelectValue placeholder={line.projectCode ? "Pick [Project] account..." : "Pick GL account..."} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {(line.projectCode
+                            ? expenseCategories.filter(isProjectCat)
+                            : expenseCategories.filter(c => !isProjectCat(c))
+                          ).map(c => (
+                            <SelectItem key={c.category_key} value={c.category_key}>
+                              {formatCategoryLabel(c.label_zh || c.label_en, c.ns_account_number)}
                             </SelectItem>
                           ))}
                         </SelectContent>

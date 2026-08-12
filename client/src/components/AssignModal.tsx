@@ -11,7 +11,8 @@ import { useToast } from "@/hooks/use-toast";
 import { formatCurrency } from "@/components/StatusBadge";
 import { formatCategoryLabel } from "@/lib/utils";
 import { Loader2, Search, X } from "lucide-react";
-import type { TransactionFull, ExpenseCategory, MetaInvoice } from "@shared/schema";
+import type { TransactionFull, ExpenseCategory, MetaInvoice, NsProjectCode } from "@shared/schema";
+import { projectMatchesEntity } from "@shared/schema";
 
 interface Props {
   transaction: TransactionFull;
@@ -33,6 +34,7 @@ export default function AssignModal({ transaction, onClose, onSaved }: Props) {
   const [entityCode, setEntityCode] = useState("");
   const [chargeTo, setChargeTo] = useState("");
   const [expenseCategory, setExpenseCategory] = useState<string>("");
+  const [projectCode, setProjectCode] = useState<string>("");
   const [note, setNote] = useState("");
   const [saveAsRule, setSaveAsRule] = useState(false);
   const [linkedInvoice, setLinkedInvoice] = useState<MetaInvoice | null>(null);
@@ -66,6 +68,19 @@ export default function AssignModal({ transaction, onClose, onSaved }: Props) {
         .order("sort_order");
       if (error) throw error;
       return data as ExpenseCategory[];
+    },
+  });
+
+  // Load NetSuite project codes (for the Project Code picker)
+  const { data: projectCodes = [] } = useQuery<NsProjectCode[]>({
+    queryKey: ["ns_project_codes_assign"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("ns_project_codes")
+        .select("*")
+        .order("project_id");
+      if (error) throw error;
+      return data as NsProjectCode[];
     },
   });
 
@@ -133,6 +148,23 @@ export default function AssignModal({ transaction, onClose, onSaved }: Props) {
   );
 
   const selectedCategory = expenseCategories.find(c => c.category_key === expenseCategory);
+  const selectedProject = projectCodes.find(p => p.project_id === projectCode);
+
+  // Projects filtered by the picked entity (fallback to all if none match, so
+  // the user is never stuck — mirrors ReconQueue behaviour for EXT/JS).
+  const filteredProjects = useMemo(() => {
+    const matched = projectCodes.filter(p => projectMatchesEntity(p, entityCode || null));
+    return matched.length > 0 ? matched : projectCodes;
+  }, [projectCodes, entityCode]);
+
+  // req: Category depends on whether a Project Code is chosen —
+  // project selected → only [Project] categories (account 7xxxx);
+  // no project → only non-[Project] categories.
+  const isProjectCat = (c: ExpenseCategory) => (c.ns_account_number || "").startsWith("7");
+  const filteredCategories = useMemo(
+    () => (projectCode ? expenseCategories.filter(isProjectCat) : expenseCategories.filter(c => !isProjectCat(c))),
+    [expenseCategories, projectCode]
+  );
 
   // Filter invoices by search
   const filteredInvoices = useMemo(() => {
@@ -199,6 +231,9 @@ export default function AssignModal({ transaction, onClose, onSaved }: Props) {
         ns_dept_name: dept.name,
         ns_account_number: selectedCategory?.ns_account_number || null,
         ns_account_name: selectedCategory?.label_en || null,
+        ns_project_code: selectedProject?.project_id || null,
+        ns_project_name: selectedProject?.project_name || null,
+        ns_customer_name: selectedProject?.customer_name || null,
         // dr_account is NOT NULL in accounting_lines (legacy column). SplitModal and the
         // matching engine both set it; Assign omitted it, so every Assign hit a not-null
         // violation ("null value in column dr_account"). Mirror SplitModal: use the picked
@@ -239,7 +274,7 @@ export default function AssignModal({ transaction, onClose, onSaved }: Props) {
         confidence: 100,
         matched_at: new Date().toISOString(),
         matched_by: 'user',
-        notes: `Manual assign → ${dept.entity_code} / ${dept.charge_to} / ${dept.name}${expenseCategory ? ' / ' + (selectedCategory?.label_en ?? expenseCategory) : ''}${linkedInvoice ? ' · inv ' + linkedInvoice.invoice_number : ''}${note ? ' · ' + note : ''}`,
+        notes: `Manual assign → ${dept.entity_code} / ${dept.charge_to} / ${dept.name}${expenseCategory ? ' / ' + (selectedCategory?.label_en ?? expenseCategory) : ''}${projectCode ? ' / ' + projectCode : ''}${linkedInvoice ? ' · inv ' + linkedInvoice.invoice_number : ''}${note ? ' · ' + note : ''}`,
       };
 
       if (existing?.id) {
@@ -408,7 +443,14 @@ export default function AssignModal({ transaction, onClose, onSaved }: Props) {
             <Label className="text-sm">公司 (Entity)</Label>
             <Select
               value={entityCode || undefined}
-              onValueChange={(v) => { setEntityCode(v); setChargeTo(""); setExpenseCategory(""); }}
+              onValueChange={(v) => {
+                setEntityCode(v);
+                setChargeTo("");
+                setExpenseCategory("");
+                // Keep the project only if it still matches the new entity
+                const curProj = projectCodes.find(p => p.project_id === projectCode);
+                if (curProj && !projectMatchesEntity(curProj, v)) setProjectCode("");
+              }}
             >
               <SelectTrigger data-testid="select-entity">
                 <SelectValue placeholder="揀公司 / Select entity" />
@@ -440,7 +482,36 @@ export default function AssignModal({ transaction, onClose, onSaved }: Props) {
             </Select>
           </div>
 
-          {/* Expense Category — skipped for JS / Go Asia (no independent NetSuite ledger) */}
+          {/* Project Code — above Category; picking one restricts Category to [Project] items */}
+          <div className="space-y-2">
+            <Label className="text-sm">Project Code (可選)</Label>
+            <Select
+              value={projectCode || "__none__"}
+              onValueChange={(v) => {
+                const next = v === "__none__" ? "" : v;
+                setProjectCode(next);
+                // Category set depends on project selection — drop a pick that no longer fits
+                if (selectedCategory && (!!next !== isProjectCat(selectedCategory))) {
+                  setExpenseCategory("");
+                }
+              }}
+            >
+              <SelectTrigger data-testid="select-project">
+                <SelectValue placeholder="揀 project（可選）" />
+              </SelectTrigger>
+              <SelectContent className="max-h-72">
+                <SelectItem value="__none__">— No project —</SelectItem>
+                {filteredProjects.map(p => (
+                  <SelectItem key={p.id} value={p.project_id}>
+                    {p.project_id} · {p.project_name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Expense Category — skipped for JS / Go Asia (no independent NetSuite ledger).
+              Options depend on Project: with project → [Project] (7xxxx) only; without → non-[Project] only. */}
           <div className="space-y-2">
             <Label className="text-sm">Category (NetSuite Account)</Label>
             {entityCode && noLedgerEntities.has(entityCode) ? (
@@ -450,10 +521,10 @@ export default function AssignModal({ transaction, onClose, onSaved }: Props) {
             ) : (
               <Select value={expenseCategory || undefined} onValueChange={setExpenseCategory}>
                 <SelectTrigger data-testid="select-category">
-                  <SelectValue placeholder="揀 category（用嚟出 journal）" />
+                  <SelectValue placeholder={projectCode ? "揀 [Project] category" : "揀 category（用嚟出 journal）"} />
                 </SelectTrigger>
                 <SelectContent>
-                  {expenseCategories.map(c => (
+                  {filteredCategories.map(c => (
                     <SelectItem key={c.category_key} value={c.category_key}>
                       {formatCategoryLabel(c.label_zh, c.ns_account_number)}
                     </SelectItem>
