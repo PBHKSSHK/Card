@@ -156,6 +156,7 @@ interface IcNeed {
 
 export default function JournalExport() {
   const [selectedPeriod, setSelectedPeriod] = useState<string>("all");
+  const [selectedCard, setSelectedCard] = useState<string>("all"); // card_last4 filter for preview + Export CSV
   const [expandedCards, setExpandedCards] = useState<Set<string>>(new Set());
   const [showUnmappedList, setShowUnmappedList] = useState(false);
   const [highlightedKey, setHighlightedKey] = useState<string | null>(null);
@@ -608,10 +609,27 @@ export default function JournalExport() {
   }, [transactions]);
 
   const filtered = useMemo(() => {
-    if (selectedPeriod === "all") return transactions;
-    return transactions.filter((t) => statementMonthOf(t) === selectedPeriod);
+    let list = transactions;
+    if (selectedPeriod !== "all") list = list.filter((t) => statementMonthOf(t) === selectedPeriod);
+    if (selectedCard !== "all") list = list.filter((t) => (t.card_last4 || "Unknown") === selectedCard);
+    return list;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [transactions, selectedPeriod]);
+  }, [transactions, selectedPeriod, selectedCard]);
+
+  // Distinct cards present in the data — labelled with the friendly card name
+  // (Rex / Alex Lo …) from ns_credit_card_accounts when available.
+  const cardOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const out: { last4: string; label: string }[] = [];
+    for (const t of transactions) {
+      const l4 = t.card_last4 || "Unknown";
+      if (seen.has(l4)) continue;
+      seen.add(l4);
+      const acc = (ccAccounts || []).find((a) => a.card_last4 === l4);
+      out.push({ last4: l4, label: acc ? `${acc.card_identifier} (····${l4})` : `····${l4}` });
+    }
+    return out.sort((a, b) => a.label.localeCompare(b.label));
+  }, [transactions, ccAccounts]);
 
   // === FIXED: match CC account by card_last4 (was: cardholder name) ===
   function findCcAccountByLast4(last4: string): NsCcAccount | undefined {
@@ -1060,7 +1078,8 @@ export default function JournalExport() {
     const a = document.createElement("a");
     a.href = url;
     const period = selectedPeriod === "all" ? "all" : selectedPeriod;
-    a.download = `netsuite_journal_${period}_${new Date().toISOString().split("T")[0]}.csv`;
+    const cardTag = selectedCard === "all" ? "" : `_card${selectedCard}`;
+    a.download = `netsuite_journal_${period}${cardTag}_${new Date().toISOString().split("T")[0]}.csv`;
     a.click();
     URL.revokeObjectURL(url);
     toast({ title: "Export complete", description: `${journalEntries.length} lines exported` });
@@ -1186,6 +1205,17 @@ export default function JournalExport() {
               <SelectItem value="all">All statement months</SelectItem>
               {periods.map((p) => (
                 <SelectItem key={p} value={p}>{p}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={selectedCard} onValueChange={setSelectedCard}>
+            <SelectTrigger className="w-52" title="揀一張信用卡淨係 preview / export 佢嘅 journal" data-testid="select-export-card">
+              <SelectValue placeholder="Credit card" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All credit cards</SelectItem>
+              {cardOptions.map((c) => (
+                <SelectItem key={c.last4} value={c.last4}>{c.label}</SelectItem>
               ))}
             </SelectContent>
           </Select>

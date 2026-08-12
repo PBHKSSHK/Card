@@ -102,6 +102,9 @@ function DocumentUploadPanel({ title, description, onSuccess }: {
     note: string;
   };
   const [manualInvoices, setManualInvoices] = useState<ManualInvoice[]>([]);
+  // Pagination for the parsed-transactions preview table
+  const [txnPage, setTxnPage] = useState(0);
+  const [txnPerPage, setTxnPerPage] = useState(50);
   const { toast } = useToast();
   const { user } = useAuth();
 
@@ -361,6 +364,10 @@ function DocumentUploadPanel({ title, description, onSuccess }: {
       if (!hasData) throw new Error("No parsed data");
       const userId = user?.id ?? null;
 
+      // 手動行如果同某張已解析 invoice 同 Invoice # → 佢哋係「分拆 pieces」，
+      // 會跟嗰張 invoice 入庫（parent+children），唔會再入落獨立手動 batch。
+      const consumedManualNos = new Set<string>();
+
       // Create one batch per file that parsed successfully
       for (const fs of fileStates.filter((f) => f.status === "done" && f.result)) {
         const result = fs.result!;
@@ -524,6 +531,50 @@ function DocumentUploadPanel({ title, description, onSuccess }: {
                 ...(patch.currency !== undefined ? { currency: patch.currency } : {}),
               } as ParsedInvoice;
             });
+            // 分拆組：手動行同某張已解析 invoice 同一個 Invoice # → 呢張 invoice
+            // 以「parent（OCR 總額）+ 每份 child」形式入庫。第一份 = 呢行自己
+            // （用戶改細咗嘅金額 + meta），其餘 = 對應嘅手動行。
+            const piecesByInvIdx: Record<number, InvoicePiece[]> = {};
+            mergedForInsert.forEach((minv, idx) => {
+              const n = (minv.invoice_number || "").trim();
+              if (!n || consumedManualNos.has(n)) return;
+              const manualPieces = manualInvoices.filter((m) => (m.invoice_number || "").trim() === n);
+              if (manualPieces.length === 0) return;
+              consumedManualNos.add(n);
+              const invIdx = dedupedOrigIdx[idx];
+              const e = editedInvoices[`${fileIdx}:${invIdx}`] || {};
+              const rowEntity = e.charge_to_code && e.charge_to_code !== "__none__" ? entityFromCharge(e.charge_to_code) : (e.charge_to_entity || null);
+              const firstPiece: InvoicePiece = {
+                amount: Number(e.amount ?? minv.amount) || 0,
+                description: (e.description ?? minv.description) || null,
+                meta: {
+                  charge_to_entity: rowEntity || null,
+                  charge_to_code: e.charge_to_code && e.charge_to_code !== "__none__" ? e.charge_to_code : null,
+                  project_code: e.project_code && e.project_code !== "__none__" ? e.project_code : null,
+                  expense_category: e.expense_category || null,
+                  card_id: e.card_id && e.card_id !== "__none__" ? e.card_id : null,
+                  note: e.note?.trim() || null,
+                },
+              };
+              const rest: InvoicePiece[] = manualPieces.map((m) => {
+                const code = m.charge_to_code && m.charge_to_code !== "__none__" ? m.charge_to_code : null;
+                return {
+                  amount: Number(m.amount) || 0,
+                  description: m.description || null,
+                  meta: {
+                    charge_to_entity: code ? entityFromCharge(code) : (m.charge_to_entity || null),
+                    charge_to_code: code,
+                    project_code: m.project_code && m.project_code !== "__none__" ? m.project_code : null,
+                    expense_category: m.expense_category || null,
+                    card_id: m.card_id && m.card_id !== "__none__" ? m.card_id : null,
+                    note: m.note?.trim() || null,
+                  },
+                };
+              });
+              piecesByInvIdx[idx] = [firstPiece, ...rest];
+              // parent 用 OCR 原始金額（總額）— 用戶改細咗嘅金額已經係第一份 child
+              (minv as any).amount = dedupedInvoices[idx].amount;
+            });
             // Per-invoice meta array (parallel to mergedForInsert)
             const metaByInvIdx = dedupedInvoices.map((_inv, idx) => {
               const invIdx = dedupedOrigIdx[idx];
@@ -555,7 +606,8 @@ function DocumentUploadPanel({ title, description, onSuccess }: {
               userId,
               periodMonth,
               metaByInvIdx,
-              splitsByInvIdx
+              splitsByInvIdx,
+              piecesByInvIdx
             );
           }
           await supabase
@@ -572,9 +624,10 @@ function DocumentUploadPanel({ title, description, onSuccess }: {
       }
 
       // --- Manual invoices (handwritten / OCR-failed rows typed by staff) ---
+      // 已經做咗「分拆 pieces」嘅手動行唔會再入落獨立手動 batch。
       if (manualInvoices.length > 0) {
         const validManual = manualInvoices.filter(
-          (m) => m.invoice_number.trim() && m.amount > 0
+          (m) => m.invoice_number.trim() && m.amount > 0 && !consumedManualNos.has(m.invoice_number.trim())
         );
         if (validManual.length > 0) {
           // Pick period_month from first manual invoice if possible
@@ -903,14 +956,18 @@ function DocumentUploadPanel({ title, description, onSuccess }: {
               </div>
             )}
 
-            {/* Merged transactions preview */}
-            {allDone && mergedTransactions.length > 0 && (
+            {/* Merged transactions preview — paginated */}
+            {allDone && mergedTransactions.length > 0 && (() => {
+              const totalPages = Math.max(1, Math.ceil(mergedTransactions.length / txnPerPage));
+              const page = Math.min(txnPage, totalPages - 1);
+              const pageRows = mergedTransactions.slice(page * txnPerPage, (page + 1) * txnPerPage);
+              return (
               <div>
                 <p className="text-sm font-medium mb-2 flex items-center gap-1.5">
                   <Eye size={14} />
                   {mergedTransactions.length} transactions (all files)
                 </p>
-                <div className="overflow-x-auto max-h-64 border rounded-md">
+                <div className="overflow-x-auto max-h-96 border rounded-md">
                   <table className="w-full table-dense text-xs">
                     <thead className="bg-muted/50 sticky top-0">
                       <tr>
@@ -922,8 +979,8 @@ function DocumentUploadPanel({ title, description, onSuccess }: {
                       </tr>
                     </thead>
                     <tbody>
-                      {mergedTransactions.slice(0, 30).map((txn, i) => (
-                        <tr key={i} className="border-t border-border/50">
+                      {pageRows.map((txn, i) => (
+                        <tr key={`${page}-${i}`} className="border-t border-border/50">
                           <td className="px-2 py-1 tabular-nums">{txn.date}</td>
                           <td className="px-2 py-1 truncate max-w-[180px]">{txn.merchant}</td>
                           <td className="px-2 py-1 text-right tabular-nums font-medium">
@@ -935,14 +992,33 @@ function DocumentUploadPanel({ title, description, onSuccess }: {
                       ))}
                     </tbody>
                   </table>
-                  {mergedTransactions.length > 30 && (
-                    <p className="text-[10px] text-center text-muted-foreground py-1.5">
-                      +{mergedTransactions.length - 30} more
-                    </p>
-                  )}
+                </div>
+                {/* Pagination bar: Page X of Y (N total items) · items per page */}
+                <div className="flex items-center justify-between gap-2 flex-wrap py-1.5 px-1 text-xs text-muted-foreground">
+                  <div className="flex items-center gap-1.5">
+                    <Button variant="outline" size="sm" className="h-6 px-2 text-xs"
+                      disabled={page === 0} onClick={() => setTxnPage(page - 1)} data-testid="txn-prev-page">‹</Button>
+                    <span className="tabular-nums">Page {page + 1} of {totalPages} ({mergedTransactions.length} total items)</span>
+                    <Button variant="outline" size="sm" className="h-6 px-2 text-xs"
+                      disabled={page >= totalPages - 1} onClick={() => setTxnPage(page + 1)} data-testid="txn-next-page">›</Button>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span>showing</span>
+                    <Select value={String(txnPerPage)} onValueChange={(v) => { setTxnPerPage(Number(v)); setTxnPage(0); }}>
+                      <SelectTrigger className="h-6 w-20 text-xs" data-testid="txn-per-page"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="50">50</SelectItem>
+                        <SelectItem value="100">100</SelectItem>
+                        <SelectItem value="150">150</SelectItem>
+                        <SelectItem value="200">200</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <span>items per page</span>
+                  </div>
                 </div>
               </div>
-            )}
+              );
+            })()}
 
             {/* Merged invoices preview with per-invoice split editor + manual edit */}
             {allDone && (mergedInvoices.length > 0 || manualInvoices.length > 0 || errorCount > 0) && (
@@ -2533,17 +2609,30 @@ type InvoiceMetaForInsert = {
   note: string | null;
 };
 
+// 一張 invoice 分拆做幾份（唔同公司）時，每份嘅內容
+type InvoicePiece = {
+  amount: number;
+  description: string | null;
+  meta: InvoiceMetaForInsert;
+};
+
 async function insertInvoices(
   batchId: string,
   invoices: ParsedInvoice[],
   userId: string | null | undefined,
   periodMonth: string | null | undefined,
   metaByInvIdx: InvoiceMetaForInsert[],
-  splitsByInvIdx?: Record<number, Array<{ project_code: string; amount_hkd: number; note: string }>>
+  splitsByInvIdx?: Record<number, Array<{ project_code: string; amount_hkd: number; note: string }>>,
+  piecesByInvIdx?: Record<number, InvoicePiece[]>
 ) {
   for (let invIdx = 0; invIdx < invoices.length; invIdx++) {
     const inv = invoices[invIdx];
-    const meta = metaByInvIdx[invIdx] || { charge_to_entity: null, charge_to_code: null, project_code: null, expense_category: null, card_id: null, note: null };
+    const pieces = piecesByInvIdx?.[invIdx];
+    // 分拆 invoice：parent 係「成張 invoice」（總額，用嚟配對 CC 交易），
+    // 每份公司分配做 child — parent 自己唔揸 charge-to/category。
+    const meta: InvoiceMetaForInsert = pieces && pieces.length > 0
+      ? { charge_to_entity: null, charge_to_code: null, project_code: null, expense_category: null, card_id: pieces[0].meta.card_id, note: null }
+      : (metaByInvIdx[invIdx] || { charge_to_entity: null, charge_to_code: null, project_code: null, expense_category: null, card_id: null, note: null });
     // Resolve account code per invoice (each invoice has its own entity + category)
     const resolvedAccount = await resolveAccountCode(meta.charge_to_entity, meta.expense_category);
     const invMonth = inv.invoice_date && inv.invoice_date.length >= 7 ? inv.invoice_date.substring(0, 7) : periodMonth;
@@ -2603,6 +2692,45 @@ async function insertInvoices(
         const { error: splitErr } = await supabase.from("meta_invoice_splits").insert(splitRecords);
         if (splitErr) throw splitErr;
       }
+    }
+
+    // 分拆 pieces → children：每份帶自己嘅公司/部門/project/category/金額。
+    // Recon Queue 嘅 Unmatched 淨係列 parent（總額），所以配對用一個 combined 金額；
+    // 展開先見到每份分配。
+    if (pieces && pieces.length > 0 && parentData?.id) {
+      const pieceRecords = [] as Record<string, any>[];
+      for (const p of pieces) {
+        const pAcc = await resolveAccountCode(p.meta.charge_to_entity, p.meta.expense_category);
+        const pHkd = cur === "HKD" ? p.amount : (fxRate ? Math.round(p.amount * fxRate * 100) / 100 : null);
+        pieceRecords.push({
+          batch_id: batchId,
+          invoice_number: inv.invoice_number || "",
+          billing_period: inv.billing_period || "",
+          amount: p.amount,
+          currency: cur,
+          amount_hkd: pHkd,
+          fx_rate: fxRate,
+          invoice_date: inv.invoice_date || null,
+          account_name: inv.account_name || "",
+          account_id: inv.account_id || null,
+          description: p.description || inv.description || null,
+          parent_invoice_id: parentData.id,
+          ...(userId ? { user_id: userId } : {}),
+          ...(invMonth ? { period_month: invMonth } : {}),
+          ...(p.meta.charge_to_entity ? { charge_to_entity: p.meta.charge_to_entity } : {}),
+          ...(p.meta.charge_to_code ? { charge_to_code: p.meta.charge_to_code } : {}),
+          ...(p.meta.project_code ? { project_code: p.meta.project_code } : {}),
+          ...(p.meta.expense_category ? { expense_category: p.meta.expense_category } : {}),
+          ...(p.meta.card_id ? { card_last4: p.meta.card_id } : {}),
+          ...(p.meta.note ? { notes: p.meta.note } : {}),
+          ...(pAcc.account_number ? { ns_account_number: pAcc.account_number } : {}),
+          ...(pAcc.account_name ? { ns_account_name: pAcc.account_name } : {}),
+        });
+      }
+      const { error: pieceErr } = await supabase.from("meta_invoices").insert(pieceRecords);
+      if (pieceErr) throw pieceErr;
+      // pieces 取代 OCR campaign line items 做 children — 唔好兩種 children 溝埋
+      continue;
     }
 
     // Insert children (Meta campaign line items) with parent_invoice_id

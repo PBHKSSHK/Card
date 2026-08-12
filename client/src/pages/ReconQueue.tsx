@@ -518,6 +518,7 @@ export default function ReconQueue() {
   const [modalType, setModalType] = useState<"assign" | "split" | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [confirmMassDelete, setConfirmMassDelete] = useState(false);
+  const [confirmInvDelete, setConfirmInvDelete] = useState(false);
   const [expandedInvoices, setExpandedInvoices] = useState<Set<string>>(new Set());
   const [expandedTxnRow, setExpandedTxnRow] = useState<string | null>(null);
   const [selectedInvIds, setSelectedInvIds] = useState<Set<string>>(new Set());
@@ -988,8 +989,33 @@ export default function ReconQueue() {
     },
   });
 
+  // 刪除交易後，如果佢哋所屬嘅 upload batch 已經清空（冇晒 CC 交易同 invoice），
+  // 一併刪走個 batch — 咁 Upload Centre 嘅上載紀錄先會同步消失，下次再 upload
+  // 同一份 statement 唔會撞「已 import」而出 duplicates。
+  const cleanupEmptyBatches = async (batchIds: (string | null | undefined)[]) => {
+    const ids = Array.from(new Set(batchIds.filter(Boolean))) as string[];
+    for (const bid of ids) {
+      const [{ count: txnCount }, { count: invCount }] = await Promise.all([
+        supabase.from("card_transactions").select("id", { count: "exact", head: true }).eq("batch_id", bid),
+        supabase.from("meta_invoices").select("id", { count: "exact", head: true }).eq("batch_id", bid),
+      ]);
+      if ((txnCount ?? 0) === 0 && (invCount ?? 0) === 0) {
+        // Best-effort: remove the stored PDF too, then the batch row itself.
+        const { data: b } = await supabase.from("upload_batches").select("file_path").eq("id", bid).maybeSingle();
+        if (b?.file_path) {
+          await supabase.storage.from("documents").remove([b.file_path]).catch(() => undefined);
+        }
+        const delRes = await supabase.from("upload_batches").delete().eq("id", bid);
+        if (delRes.error) console.warn("[ReconQueue] batch cleanup failed:", delRes.error.message);
+      }
+    }
+  };
+
   const massDeleteMutation = useMutation({
     mutationFn: async (txnIds: string[]) => {
+      const affectedBatchIds = (transactions || [])
+        .filter(t => txnIds.includes(t.transaction_id))
+        .map(t => t.batch_id);
       for (let i = 0; i < txnIds.length; i += 50) {
         const chunk = txnIds.slice(i, i + 50);
         // Check every delete — a discarded error let success toasts fire even when
@@ -1001,6 +1027,7 @@ export default function ReconQueue() {
         const ctRes = await supabase.from("card_transactions").delete().in("id", chunk);
         if (ctRes.error) throw ctRes.error;
       }
+      await cleanupEmptyBatches(affectedBatchIds);
       return txnIds.length;
     },
     onSuccess: (count) => {
@@ -1141,6 +1168,43 @@ export default function ReconQueue() {
         .from("meta_invoices").update(invoicePatch).eq("id", input.invoiceId).select();
       if (invErr) throw invErr;
       if (!invUpd || invUpd.length === 0) throw new Error("Invoice update affected 0 rows (RLS?)");
+
+      // 分拆 invoice（Upload Centre 一張拆幾間公司）：pieces 係 children，
+      // 每份帶自己嘅 charge-to/category/金額。配對時自動將 pieces 寫入呢筆
+      // 交易嘅 accounting_lines，journal 直接分公司出數 — 唔使再喺 Split 度重入一次。
+      const { data: pieceKids, error: pkErr } = await supabase
+        .from("meta_invoices")
+        .select("amount, amount_hkd, charge_to_entity, charge_to_code, project_code, expense_category, ns_account_number, ns_account_name, notes, description")
+        .eq("parent_invoice_id", input.invoiceId)
+        .not("charge_to_code", "is", null);
+      if (pkErr) throw pkErr;
+      if (pieceKids && pieceKids.length > 0) {
+        const totalPieces = pieceKids.reduce((s, k) => s + (Number(k.amount_hkd ?? k.amount) || 0), 0);
+        const delAl = await supabase.from("accounting_lines").delete().eq("transaction_id", input.txnId);
+        if (delAl.error) throw delAl.error;
+        const lineRecords = pieceKids.map((k) => {
+          const dept = (nsDepartmentsAll || []).find(d => d.charge_to === k.charge_to_code);
+          const amt = Number(k.amount_hkd ?? k.amount) || 0;
+          return {
+            transaction_id: input.txnId,
+            amount_hkd: amt,
+            split_pct: totalPieces > 0 ? Math.round((amt / totalPieces) * 10000) / 100 : null,
+            ns_entity_code: k.charge_to_entity || dept?.entity_code || null,
+            ns_charge_to: k.charge_to_code,
+            ns_subsidiary_name: dept?.subsidiary_name || null,
+            ns_dept_name: dept?.name || null,
+            ns_account_number: k.ns_account_number || null,
+            ns_account_name: k.ns_account_name || null,
+            ns_project_code: k.project_code || null,
+            expense_category: k.expense_category || null,
+            dr_account: k.ns_account_number || "6000",
+            cr_account: "2100",
+            description: k.notes || k.description || null,
+          };
+        });
+        const insAl = await supabase.from("accounting_lines").insert(lineRecords);
+        if (insAl.error) throw insAl.error;
+      }
     },
     onSuccess: () => {
       setSelectedIds(new Set());
@@ -1154,6 +1218,55 @@ export default function ReconQueue() {
     },
     onError: (err: Error) => {
       toast({ title: "配對失敗", description: err.message, variant: "destructive" });
+    },
+  });
+
+  // 刪除 invoice（連 children/splits 一齊）。有配對嘅交易會退回 unmatched；
+  // batch 清空埋就連 upload 紀錄一齊刪 — 同 Upload Centre 同步，避免重複。
+  const deleteInvoicesMutation = useMutation({
+    mutationFn: async (invoiceIds: string[]) => {
+      const affectedBatchIds = (allInvoices || [])
+        .filter(inv => invoiceIds.includes(inv.id))
+        .map(inv => inv.batch_id);
+
+      // Children ids too — reconciliation rows may reference either level.
+      const { data: kids, error: kidErr } = await supabase
+        .from("meta_invoices").select("id").in("parent_invoice_id", invoiceIds);
+      if (kidErr) throw kidErr;
+      const allIds = [...invoiceIds, ...(kids || []).map(k => k.id)];
+
+      // Unlink any reconciliation rows (FK is NO ACTION — must clear first).
+      for (let i = 0; i < allIds.length; i += 100) {
+        const chunk = allIds.slice(i, i + 100);
+        const rrRes = await supabase
+          .from("reconciliation_results")
+          .update({ status: "unmatched", invoice_id: null, match_type: null, matched_at: null, notes: "Invoice deleted" })
+          .in("invoice_id", chunk);
+        if (rrRes.error) throw rrRes.error;
+      }
+
+      // Delete parents — children + splits cascade via FK.
+      for (let i = 0; i < invoiceIds.length; i += 50) {
+        const chunk = invoiceIds.slice(i, i + 50);
+        const delRes = await supabase.from("meta_invoices").delete().in("id", chunk);
+        if (delRes.error) throw delRes.error;
+      }
+
+      await cleanupEmptyBatches(affectedBatchIds);
+      return invoiceIds.length;
+    },
+    onSuccess: (count) => {
+      setSelectedInvIds(new Set());
+      queryClient.invalidateQueries({ queryKey: ["recon-queue"] });
+      queryClient.invalidateQueries({ queryKey: ["invoices-all"] });
+      queryClient.invalidateQueries({ queryKey: ["invoices-children"] });
+      queryClient.invalidateQueries({ queryKey: ["recon-results"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["batch-files"] });
+      toast({ title: "已刪除", description: `${count} 張 invoice 已刪除（連上載紀錄同步清理）` });
+    },
+    onError: (err: Error) => {
+      toast({ title: "刪除失敗", description: err.message, variant: "destructive" });
     },
   });
 
@@ -2522,7 +2635,25 @@ export default function ReconQueue() {
                   解除配對
                 </Button>
               )}
-              <Button variant="ghost" size="sm" className="text-xs h-7" onClick={() => setSelectedInvIds(new Set())}>
+              {!confirmInvDelete ? (
+                <Button variant="destructive" size="sm" className="text-xs h-7"
+                  onClick={() => setConfirmInvDelete(true)} data-testid="button-delete-invoices">
+                  <Trash2 className="h-3 w-3 mr-1" /> 刪除 invoice
+                </Button>
+              ) : (
+                <span className="flex items-center gap-2">
+                  <span className="text-xs text-destructive">確認刪除 {selectedInvIds.size} 張？（連上載紀錄一齊清）</span>
+                  <Button variant="destructive" size="sm" className="text-xs h-7"
+                    disabled={deleteInvoicesMutation.isPending}
+                    onClick={() => { deleteInvoicesMutation.mutate(Array.from(selectedInvIds)); setConfirmInvDelete(false); }}
+                    data-testid="button-confirm-delete-invoices">
+                    {deleteInvoicesMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+                    確認刪除
+                  </Button>
+                  <Button variant="ghost" size="sm" className="text-xs h-7" onClick={() => setConfirmInvDelete(false)}>取消</Button>
+                </span>
+              )}
+              <Button variant="ghost" size="sm" className="text-xs h-7" onClick={() => { setSelectedInvIds(new Set()); setConfirmInvDelete(false); }}>
                 取消選取
               </Button>
             </div>
