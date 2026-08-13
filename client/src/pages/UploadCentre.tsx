@@ -600,15 +600,56 @@ function DocumentUploadPanel({ title, description, onSuccess }: {
                 splitsByInvIdx[idx] = invoiceSplits[key];
               }
             });
-            await insertInvoices(
-              batch.id,
-              mergedForInsert,
-              userId,
-              periodMonth,
-              metaByInvIdx,
-              splitsByInvIdx,
-              piecesByInvIdx
-            );
+            // Cross-upload duplicate guard — CC statements have one, invoices didn't:
+            // re-uploading an invoice # that already exists in the DB (often already
+            // MATCHED months ago) silently created a second unmatched copy, so the same
+            // invoice # showed up in both Matched and Unmatched in the Recon Queue.
+            const importNos = Array.from(new Set(
+              mergedForInsert.map(mi => (mi.invoice_number || "").trim()).filter(Boolean)
+            ));
+            let skipNos = new Set<string>();
+            if (importNos.length > 0) {
+              const { data: existRows } = await supabase
+                .from("meta_invoices")
+                .select("invoice_number, is_matched")
+                .in("invoice_number", importNos)
+                .is("parent_invoice_id", null);
+              const existing = Array.from(new Set((existRows || []).map(r => (r.invoice_number || "").trim())));
+              if (existing.length > 0) {
+                const matchedNos = new Set((existRows || []).filter(r => r.is_matched).map(r => (r.invoice_number || "").trim()));
+                const detail = existing.map(n => `· ${n}${matchedNos.has(n) ? "（已配對）" : ""}`).join("\n");
+                const proceed = window.confirm(
+                  `以下 invoice # 已經存在於系統，再 import 會出 duplicate：\n\n${detail}\n\n` +
+                  `按「確定」照樣 import（會出重複）\n按「取消」跳過呢啲 invoice，只 import 其餘`
+                );
+                if (!proceed) skipNos = new Set(existing);
+              }
+            }
+            // Apply the skip decision — filter all four parallel structures together.
+            const keepIdx = mergedForInsert
+              .map((mi, idx) => ({ idx, n: (mi.invoice_number || "").trim() }))
+              .filter(({ n }) => !n || !skipNos.has(n))
+              .map(({ idx }) => idx);
+            const finalInvoices = keepIdx.map(i => mergedForInsert[i]);
+            const finalMeta = keepIdx.map(i => metaByInvIdx[i]);
+            const finalSplits: typeof splitsByInvIdx = {};
+            const finalPieces: typeof piecesByInvIdx = {};
+            keepIdx.forEach((oldIdx, newIdx) => {
+              if (splitsByInvIdx[oldIdx]) finalSplits[newIdx] = splitsByInvIdx[oldIdx];
+              if (piecesByInvIdx[oldIdx]) finalPieces[newIdx] = piecesByInvIdx[oldIdx];
+            });
+
+            if (finalInvoices.length > 0) {
+              await insertInvoices(
+                batch.id,
+                finalInvoices,
+                userId,
+                periodMonth,
+                finalMeta,
+                finalSplits,
+                finalPieces
+              );
+            }
           }
           await supabase
             .from("upload_batches")
@@ -626,9 +667,31 @@ function DocumentUploadPanel({ title, description, onSuccess }: {
       // --- Manual invoices (handwritten / OCR-failed rows typed by staff) ---
       // 已經做咗「分拆 pieces」嘅手動行唔會再入落獨立手動 batch。
       if (manualInvoices.length > 0) {
-        const validManual = manualInvoices.filter(
+        let validManual = manualInvoices.filter(
           (m) => m.invoice_number.trim() && m.amount > 0 && !consumedManualNos.has(m.invoice_number.trim())
         );
+        // 同上：手動 invoice 都做 cross-upload 防重複檢查
+        if (validManual.length > 0) {
+          const manualNos = Array.from(new Set(validManual.map(m => m.invoice_number.trim())));
+          const { data: existRows } = await supabase
+            .from("meta_invoices")
+            .select("invoice_number, is_matched")
+            .in("invoice_number", manualNos)
+            .is("parent_invoice_id", null);
+          const existing = Array.from(new Set((existRows || []).map(r => (r.invoice_number || "").trim())));
+          if (existing.length > 0) {
+            const matchedNos = new Set((existRows || []).filter(r => r.is_matched).map(r => (r.invoice_number || "").trim()));
+            const detail = existing.map(n => `· ${n}${matchedNos.has(n) ? "（已配對）" : ""}`).join("\n");
+            const proceed = window.confirm(
+              `以下手動輸入嘅 invoice # 已經存在於系統：\n\n${detail}\n\n` +
+              `按「確定」照樣 import（會出重複）\n按「取消」跳過呢啲，只 import 其餘`
+            );
+            if (!proceed) {
+              const skip = new Set(existing);
+              validManual = validManual.filter(m => !skip.has(m.invoice_number.trim()));
+            }
+          }
+        }
         if (validManual.length > 0) {
           // Pick period_month from first manual invoice if possible
           const firstDate = validManual[0].invoice_date;
