@@ -32,6 +32,9 @@ interface SplitLine {
   projectCode: string;      // ns_project_codes.project_id (eg "P10000119")
   amount: number;
   pct: number;
+  // 備註 — 有填就寫入 accounting_lines.description，journal line memo 直接用佢
+  // （取代 Upload Centre 嘅 invoice 備註）；留空則 journal fallback 用返 invoice 備註。
+  note: string;
 }
 
 interface Props {
@@ -43,7 +46,7 @@ interface Props {
 export default function SplitModal({ transaction, onClose, onSaved }: Props) {
   const totalAmount = transaction.amount_hkd ?? transaction.amount;
   const [lines, setLines] = useState<SplitLine[]>([
-    { entityCode: "", chargeTo: "", expenseCategory: "", projectCode: "", amount: totalAmount, pct: 100 },
+    { entityCode: "", chargeTo: "", expenseCategory: "", projectCode: "", amount: totalAmount, pct: 100, note: "" },
   ]);
   const { toast } = useToast();
 
@@ -105,7 +108,7 @@ export default function SplitModal({ transaction, onClose, onSaved }: Props) {
   }, [nsDepartments]);
 
   const addLine = () => {
-    setLines([...lines, { entityCode: "", chargeTo: "", expenseCategory: "", projectCode: "", amount: 0, pct: 0 }]);
+    setLines([...lines, { entityCode: "", chargeTo: "", expenseCategory: "", projectCode: "", amount: 0, pct: 0, note: "" }]);
   };
 
   const removeLine = (index: number) => {
@@ -201,7 +204,9 @@ export default function SplitModal({ transaction, onClose, onSaved }: Props) {
           split_pct: line.pct,
           dr_account: cat?.ns_account_number || '6000',
           cr_account: '2100',
-          description: transaction.merchant,
+          // 備註有填 → journal line memo 用佢（取代 Upload Centre 備註）；
+          // 留空 → 存 merchant，JournalExport 會 fallback 用返 invoice 備註。
+          description: line.note.trim() || transaction.merchant,
         });
         if (error) throw error;
       }
@@ -344,6 +349,17 @@ export default function SplitModal({ transaction, onClose, onSaved }: Props) {
                         </SelectContent>
                       </Select>
                       )}
+                    </div>
+                    <div className="col-span-2">
+                      <Label className="text-xs">備註 (optional — 有填會代替 Upload Centre 備註做 journal memo)</Label>
+                      <Input
+                        type="text"
+                        value={line.note}
+                        onChange={e => updateLine(i, "note", e.target.value)}
+                        placeholder="留空 = 用返 Upload Centre 嘅 invoice 備註"
+                        className="h-8 text-sm"
+                        data-testid={`split-note-${i}`}
+                      />
                     </div>
                     <div>
                       <Label className="text-xs">Amount (HKD)</Label>
