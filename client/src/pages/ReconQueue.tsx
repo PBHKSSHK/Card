@@ -161,6 +161,21 @@ function ChildInvoiceFields({
         </Select>
         )}
       </td>
+      {/* 備註 — Upload Centre 每一筆嘅備註，喺度直接睇 + 改（journal line memo 用佢） */}
+      <td className="px-1 py-0.5" onClick={stop} onPointerDown={stop}>
+        <Input
+          key={`${child.id}-note-${child.notes ?? ""}`}
+          type="text"
+          className="h-6 text-[10px] px-1.5 min-w-[110px]"
+          defaultValue={child.notes || ""}
+          placeholder="備註"
+          title={child.notes || "備註（journal line memo 用）"}
+          onBlur={(e) => {
+            const v = e.currentTarget.value.trim();
+            if (v !== (child.notes || "")) onUpdate({ notes: v || null });
+          }}
+        />
+      </td>
     </>
   );
 }
@@ -867,6 +882,44 @@ export default function ReconQueue() {
             .update(invoicePatch)
             .eq("id", result.invoiceId);
           if (invErr) writeFailures++;
+
+          // 分拆 invoice（parent+pieces）：配對嗰刻將 pieces 寫入 accounting_lines，
+          // journal 直接按公司出數（每條 line 帶埋自己嗰份 Upload Centre 備註）。
+          // 行咗呢步就唔會再行下面 rules-path 嘅單一 line。
+          if (!existingLineTxnIds.has(result.transactionId)) {
+            const { data: pieceKids, error: pkErr } = await supabase
+              .from("meta_invoices")
+              .select("amount, amount_hkd, charge_to_entity, charge_to_code, project_code, expense_category, ns_account_number, ns_account_name, notes, description")
+              .eq("parent_invoice_id", result.invoiceId)
+              .not("charge_to_code", "is", null);
+            if (pkErr) writeFailures++;
+            else if (pieceKids && pieceKids.length > 0) {
+              const totalPieces = pieceKids.reduce((s, k) => s + (Number(k.amount_hkd ?? k.amount) || 0), 0);
+              const lineRecords = pieceKids.map((k) => {
+                const dept = (nsDepartmentsAll || []).find(d => d.charge_to === k.charge_to_code);
+                const amt = Number(k.amount_hkd ?? k.amount) || 0;
+                return {
+                  transaction_id: result.transactionId,
+                  amount_hkd: amt,
+                  split_pct: totalPieces > 0 ? Math.round((amt / totalPieces) * 10000) / 100 : null,
+                  ns_entity_code: k.charge_to_entity || dept?.entity_code || null,
+                  ns_charge_to: k.charge_to_code,
+                  ns_subsidiary_name: dept?.subsidiary_name || null,
+                  ns_dept_name: dept?.name || null,
+                  ns_account_number: k.ns_account_number || null,
+                  ns_account_name: k.ns_account_name || null,
+                  ns_project_code: k.project_code || null,
+                  expense_category: k.expense_category || null,
+                  dr_account: k.ns_account_number || "6000",
+                  cr_account: "2100",
+                  description: k.notes || k.description || null,
+                };
+              });
+              const insAl = await supabase.from("accounting_lines").insert(lineRecords);
+              if (insAl.error) writeFailures++;
+              else existingLineTxnIds.add(result.transactionId);
+            }
+          }
         }
 
         if (result.status === 'matched' && result.entityId && result.departmentId) {
@@ -2241,7 +2294,7 @@ export default function ReconQueue() {
                               <th className="text-right text-[10px] font-medium text-muted-foreground px-2 py-2 whitespace-nowrap">Amount</th>
                               {/* Divider */}
                               <th className="w-px bg-border p-0"></th>
-                              {/* Right (Invoice) — 9 cols */}
+                              {/* Right (Invoice) — 10 cols */}
                               <th className="px-2 py-2 w-6"></th>
                               <th className="text-left text-[10px] font-medium text-muted-foreground px-2 py-2 whitespace-nowrap">Date</th>
                               <th className="text-left text-[10px] font-medium text-muted-foreground px-2 py-2">Invoice #</th>
@@ -2249,6 +2302,7 @@ export default function ReconQueue() {
                               <th className="text-left text-[10px] font-medium text-muted-foreground px-2 py-2 w-[55px]">Charge</th>
                               <th className="text-left text-[10px] font-medium text-muted-foreground px-2 py-2 w-[65px]">Project</th>
                               <th className="text-left text-[10px] font-medium text-muted-foreground px-2 py-2 w-[80px]">Account</th>
+                              <th className="text-left text-[10px] font-medium text-muted-foreground px-2 py-2 w-[110px]">備註</th>
                               <th className="text-left text-[10px] font-medium text-muted-foreground px-2 py-2">Description</th>
                               <th className="text-center text-[10px] font-medium text-muted-foreground px-2 py-2 w-8">File</th>
                             </tr>
@@ -2332,7 +2386,7 @@ export default function ReconQueue() {
                                       </td>
                                     </>
                                   ) : (
-                                    <td colSpan={9} className="px-3 py-1.5 text-[11px] text-muted-foreground/50 italic">無對應 invoice</td>
+                                    <td colSpan={10} className="px-3 py-1.5 text-[11px] text-muted-foreground/50 italic">無對應 invoice</td>
                                   )}
                                 </tr>,
                                 // Expanded: split editor spans full width (14 columns)
@@ -2345,7 +2399,7 @@ export default function ReconQueue() {
                                     expenseCategories={expenseCategories || []}
                                         accountsByEntity={accountsByEntity}
                                         nsDepartments={nsDepartmentsAll}
-                                    colSpan={14}
+                                    colSpan={15}
                                     onAddSplit={(pc, amt) => addSplitMutation.mutate({
                                       invoiceId: inv.id,
                                       projectCode: pc,
@@ -2494,6 +2548,7 @@ export default function ReconQueue() {
                                 <th className="text-left text-xs font-medium text-muted-foreground px-2 py-2 w-[60px]">Charge To</th>
                                 <th className="text-left text-xs font-medium text-muted-foreground px-2 py-2 w-[70px]">Project</th>
                                 <th className="text-left text-xs font-medium text-muted-foreground px-2 py-2 w-[90px]">Account</th>
+                                <th className="text-left text-xs font-medium text-muted-foreground px-2 py-2 w-[110px]">備註</th>
                                 <th className="text-left text-xs font-medium text-muted-foreground px-3 py-2">Description</th>
                                 <th className="text-center text-xs font-medium text-muted-foreground px-2 py-2 w-8">File</th>
                               </tr>
@@ -2556,7 +2611,7 @@ export default function ReconQueue() {
                                       expenseCategories={expenseCategories || []}
                                         accountsByEntity={accountsByEntity}
                                         nsDepartments={nsDepartmentsAll}
-                                      colSpan={9}
+                                      colSpan={10}
                                       onAddSplit={(pc, amt) => addSplitMutation.mutate({
                                         invoiceId: inv.id,
                                         projectCode: pc,

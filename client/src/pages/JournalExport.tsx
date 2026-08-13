@@ -747,6 +747,17 @@ export default function JournalExport() {
         if (lines.length > 0) {
           // SPLIT — one accounting_line per allocation.
           for (const l of lines) {
+            // req: line memo 用返 Upload Centre 每一筆嘅備註。每份 piece 嘅備註存喺
+            // accounting_lines.description（AssignModal/分拆配對寫入）；parent invoice
+            // 冇備註，所以唔可以只靠 txn 層面嘅 inv_notes。
+            // 順序照舊：備註 → merchant → INV → date。
+            const lineNote = l.description && l.description !== t.merchant ? l.description : (t.inv_notes || null);
+            const lineMemoParts: string[] = [];
+            if (lineNote) lineMemoParts.push(lineNote);
+            lineMemoParts.push(t.merchant);
+            if (t.invoice_number) lineMemoParts.push(`INV ${t.invoice_number}`);
+            if (_memoDate) lineMemoParts.push(_memoDate);
+            const lineMemo = lineMemoParts.join(" - ");
             const projLabel = l.ns_project_code || ""; // req#4 — Project ID only
             const splitAmt = round2(Math.abs(Number(l.amount_hkd)));
             const splitEmitSub =
@@ -766,7 +777,7 @@ export default function JournalExport() {
                   expenseAccount: l.ns_account_number, amount: splitAmt, isReversal: isReversalLine,
                   date: txnDate,
                   dept: (l.ns_charge_to && chargeToDeptName.get(l.ns_charge_to)) || l.ns_dept_name || "",
-                  project: projLabel, memo: datedMemo, mapped: !!l.ns_account_number, employee: t.inv_employee || cardholderEmp,
+                  project: projLabel, memo: lineMemo, mapped: !!l.ns_account_number, employee: t.inv_employee || cardholderEmp,
                 });
               }
             } else {
@@ -779,7 +790,7 @@ export default function JournalExport() {
                 currency: "HKD",
                 debit: isReversalLine ? null : splitAmt,
                 credit: isReversalLine ? splitAmt : null,
-                memo: lines.length > 1 ? `${datedMemo} [${l.split_pct?.toFixed(0)}%]` : datedMemo,
+                memo: lines.length > 1 ? `${lineMemo} [${l.split_pct?.toFixed(0)}%]` : lineMemo,
                 employee: t.inv_employee || cardholderEmp,
                 subsidiary: ccSubsidiary,
                 department: crossSubUnmapped
