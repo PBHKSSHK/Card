@@ -736,7 +736,10 @@ export default function JournalExport() {
         if (t.inv_notes) memoParts.push(t.inv_notes);
         memoParts.push(t.merchant);
         if (t.invoice_number) memoParts.push(`INV ${t.invoice_number}`);
-        const _memoDate = (t.txn_date || "").slice(0, 10);
+        // Memo 末端嘅實際簽帳日 — dd/mm/yyyy 格式
+        const _memoIso = (t.txn_date || "").slice(0, 10);
+        const _m = _memoIso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        const _memoDate = _m ? `${_m[3]}/${_m[2]}/${_m[1]}` : _memoIso;
         if (_memoDate) memoParts.push(_memoDate);
         const datedMemo = memoParts.join(" - ");
 
