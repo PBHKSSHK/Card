@@ -590,6 +590,12 @@ export default function ClaimJournalExport() {
           memo = parts.join(" - ") || `Expense #${l.item_no}`;
         }
         memo = `[${claimantLabel}] ${memo}`;
+        // 實際單據日期放 memo 末端（dd/mm/yyyy）— Date 欄統一用 journalDate，
+        // 一個 entry no 一個日期（NetSuite 一張 JE 一個日期）。
+        if (l.line_date) {
+          const dm = l.line_date.match(/^(\d{4})-(\d{2})-(\d{2})/);
+          memo += ` - ${dm ? `${dm[3]}/${dm[2]}/${dm[1]}` : l.line_date}`;
+        }
 
         const projLabel = l.project_code
           ? (projectIdToName.get(l.project_code) ? `${l.project_code} · ${projectIdToName.get(l.project_code)}` : l.project_code)
@@ -601,7 +607,7 @@ export default function ClaimJournalExport() {
         const isNegative = amt < 0;
         drLines.push({
           entry_no: entryNo,
-          date: l.line_date || journalDate,
+          date: journalDate,
           account: accountNumber ? resolveAccount(accountNumber) : "UNMAPPED",
           currency: "HKD",
           debit: isNegative ? null : amt,

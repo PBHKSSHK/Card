@@ -901,6 +901,10 @@ export default function JournalExport() {
       for (const acc of Array.from(arAccum.values())) {
         const net = round2(acc.net);
         const dueFromIsDR = net >= 0;
+        // GoAsia / JS 冇 NetSuite payable side — 唔會出 IC 對方分錄，係靠開
+        // Debit Note 追數，所以 memo 末端註明。
+        const debitNoteTag = (!acc.ic.has_payable_side && acc.ic.ar_account_code)
+          ? " (will be issued Debit Note)" : "";
         entries.push({
           entry_no: entryNo,
           date: journalDate,
@@ -908,7 +912,7 @@ export default function JournalExport() {
           currency: "HKD",
           debit: dueFromIsDR ? Math.abs(net) : null,
           credit: dueFromIsDR ? null : Math.abs(net),
-          memo: `Credit card payment - ${cardholderLabel}`,
+          memo: `Credit card payment - ${cardholderLabel}${debitNoteTag}`,
           subsidiary: ccSubsidiary,
           department: "",
           class_project: "",
