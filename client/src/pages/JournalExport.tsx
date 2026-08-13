@@ -486,7 +486,9 @@ export default function JournalExport() {
         net += n.isReversal ? -n.amount : n.amount;
         out.push({
           entry_no: e,
-          date: n.date,
+          // 同一個 entry no 所有 line 用同一日（NetSuite 一張 JE 一個日期）；
+          // 實際簽帳日已經喺 memo 末端。
+          date: arr[0].journalDate,
           account: n.expenseAccount ? resolveAccount(n.expenseAccount) : "UNMAPPED",
           currency: "HKD",
           debit: n.isReversal ? null : n.amount,
@@ -775,7 +777,7 @@ export default function JournalExport() {
                 icNeeds.push({
                   cardLabel: cardholderLabel, cardholderEmp, journalDate, ic: icOverride.ic,
                   expenseAccount: l.ns_account_number, amount: splitAmt, isReversal: isReversalLine,
-                  date: txnDate,
+                  date: journalDate,
                   dept: (l.ns_charge_to && chargeToDeptName.get(l.ns_charge_to)) || l.ns_dept_name || "",
                   project: projLabel, memo: lineMemo, mapped: !!l.ns_account_number, employee: t.inv_employee || cardholderEmp,
                 });
@@ -785,7 +787,7 @@ export default function JournalExport() {
               const crossSubUnmapped = !!lineEntity && lineEntity !== cardEntityCode;
               entries.push({
                 entry_no: entryNo,
-                date: txnDate,
+                date: journalDate,
                 account: resolveAccount(l.ns_account_number),
                 currency: "HKD",
                 debit: isReversalLine ? null : splitAmt,
@@ -834,7 +836,7 @@ export default function JournalExport() {
               icNeeds.push({
                 cardLabel: cardholderLabel, cardholderEmp, journalDate, ic: icOverride.ic,
                 expenseAccount: t.inv_ns_account_number, amount: absAmt, isReversal: isReversalLine,
-                date: txnDate,
+                date: journalDate,
                 dept: invChargeCode ? chargeToDeptName.get(invChargeCode) || "" : "",
                 project: projLabel, memo: datedMemo, mapped: !!t.inv_ns_account_number, employee: t.inv_employee || cardholderEmp,
               });
@@ -843,7 +845,7 @@ export default function JournalExport() {
             const invCrossSubUnmapped = !!lineEntity && lineEntity !== cardEntityCode;
             entries.push({
               entry_no: entryNo,
-              date: txnDate,
+              date: journalDate,
               account: resolveAccount(t.inv_ns_account_number),
               currency: "HKD",
               debit: isReversalLine ? null : absAmt,
@@ -873,7 +875,7 @@ export default function JournalExport() {
           const absAmt = round2(Math.abs(amt));
           entries.push({
             entry_no: entryNo,
-            date: txnDate,
+            date: journalDate,
             account: bankClass.accountNumber ? resolveAccount(bankClass.accountNumber) : "",
             currency: "HKD",
             debit: isReversalLine ? null : absAmt,
