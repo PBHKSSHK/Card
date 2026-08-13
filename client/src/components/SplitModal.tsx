@@ -44,7 +44,10 @@ interface Props {
 }
 
 export default function SplitModal({ transaction, onClose, onSaved }: Props) {
-  const totalAmount = transaction.amount_hkd ?? transaction.amount;
+  // Coerce — numeric columns can surface as strings depending on the driver;
+  // a string here would break every amount computation (string concat) and
+  // permanently disable Save via isBalanced.
+  const totalAmount = Number(transaction.amount_hkd ?? transaction.amount) || 0;
   const [lines, setLines] = useState<SplitLine[]>([
     { entityCode: "", chargeTo: "", expenseCategory: "", projectCode: "", amount: totalAmount, pct: 100, note: "" },
   ]);
@@ -155,9 +158,20 @@ export default function SplitModal({ transaction, onClose, onSaved }: Props) {
   // without → only non-[Project] categories. Same rule as Upload Centre / Assign.
   const isProjectCat = (c: ExpenseCategory) => (c.ns_account_number || "").startsWith("7");
 
-  const totalSplit = lines.reduce((s, l) => s + l.amount, 0);
+  const totalSplit = lines.reduce((s, l) => s + (Number(l.amount) || 0), 0);
   const isBalanced = Math.abs(totalSplit - totalAmount) < 0.01;
-  const allComplete = lines.every(l => l.entityCode && l.chargeTo && l.amount > 0);
+  const allComplete = lines.every(l => l.entityCode && l.chargeTo && (Number(l.amount) || 0) > 0);
+
+  // 講明點解 Save 被鎖 — 唔好靜靜哋 disabled
+  const disabledReasons: string[] = [];
+  if (!isBalanced) disabledReasons.push(`金額未平（差 ${round2(totalAmount - totalSplit).toFixed(2)}）`);
+  lines.forEach((l, i) => {
+    const missing: string[] = [];
+    if (!l.entityCode) missing.push("Entity");
+    if (!l.chargeTo) missing.push("Department/Team");
+    if (!((Number(l.amount) || 0) > 0)) missing.push("Amount");
+    if (missing.length) disabledReasons.push(`Line ${i + 1} 未填：${missing.join("、")}`);
+  });
 
   const saveMutation = useMutation({
     mutationFn: async () => {
@@ -206,9 +220,15 @@ export default function SplitModal({ transaction, onClose, onSaved }: Props) {
           cr_account: '2100',
           // 備註有填 → journal line memo 用佢（取代 Upload Centre 備註）；
           // 留空 → 存 merchant，JournalExport 會 fallback 用返 invoice 備註。
-          description: line.note.trim() || transaction.merchant,
+          description: (line.note || "").trim() || transaction.merchant,
         });
-        if (error) throw error;
+        if (error) {
+          // RLS rejection reads cryptically — translate the common case.
+          if (/row-level security/i.test(error.message)) {
+            throw new Error(`你嘅帳號冇權將數拆去 ${line.entityCode}（BU 用戶只可以拆去自己有權嘅公司）。請搵 admin 處理。`);
+          }
+          throw error;
+        }
       }
 
       // Update reconciliation result — check the error too, so a silent RLS/network
@@ -407,16 +427,25 @@ export default function SplitModal({ transaction, onClose, onSaved }: Props) {
           </div>
         </div>
 
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button
-            onClick={() => saveMutation.mutate()}
-            disabled={!isBalanced || !allComplete || saveMutation.isPending}
-            data-testid="button-confirm-split"
-          >
-            {saveMutation.isPending ? <Loader2 className="animate-spin mr-2" size={16} /> : null}
-            Save Split
-          </Button>
+        <DialogFooter className="flex-col items-stretch gap-2 sm:flex-col">
+          {disabledReasons.length > 0 && (
+            <div className="text-xs text-destructive space-y-0.5" data-testid="split-disabled-reasons">
+              {disabledReasons.map((r, i) => (
+                <div key={i} className="flex items-center gap-1"><AlertCircle size={12} /> {r}</div>
+              ))}
+            </div>
+          )}
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={onClose}>Cancel</Button>
+            <Button
+              onClick={() => saveMutation.mutate()}
+              disabled={!isBalanced || !allComplete || saveMutation.isPending}
+              data-testid="button-confirm-split"
+            >
+              {saveMutation.isPending ? <Loader2 className="animate-spin mr-2" size={16} /> : null}
+              Save Split
+            </Button>
+          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>
