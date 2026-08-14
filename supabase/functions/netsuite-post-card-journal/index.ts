@@ -261,11 +261,21 @@ Deno.serve(async (req) => {
         const loc = nsRes.headers.get('Location') || '';
         const nsInternalId = loc.split('/').pop() || 'created';
         created++;
+        // Record the post so the UI can badge this card/month as already posted.
+        await svc.from('ns_card_journal_posts').upsert(
+          { external_id: extId, netsuite_id: nsInternalId, label, posted_by: claims.sub || null },
+          { onConflict: 'external_id' },
+        );
         results.push({ entry_no: entryNo, label, external_id: extId, status: 'created', netsuite_id: nsInternalId, lines: items.length, total_dr: Math.round(dr * 100) / 100 });
       } else {
         const errText = (await nsRes.text()).slice(0, 800);
         if (/already exists|duplicate/i.test(errText)) {
           duplicates++;
+          // It exists in NetSuite — make sure our tracking table knows too.
+          await svc.from('ns_card_journal_posts').upsert(
+            { external_id: extId, label, posted_by: claims.sub || null },
+            { onConflict: 'external_id', ignoreDuplicates: true },
+          );
           results.push({ entry_no: entryNo, label, external_id: extId, status: 'duplicate', error: 'externalId already posted' });
         } else {
           failed++;

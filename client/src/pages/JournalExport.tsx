@@ -201,7 +201,13 @@ export default function JournalExport() {
       const { data: emps } = await supabase.from("ns_employees").select("employee_id, code, name, email");
       for (const e of ((emps || []) as any[])) if (e?.email) empByEmail.set((e.email || "").toLowerCase(), `${e.code || e.employee_id} ${e.name || ""}`.trim());
       const employeeByUser = new Map<string, string>();
-      for (const [uid, email] of Array.from(emailByUser.entries())) employeeByUser.set(uid, (email && empByEmail.get(email)) || email || "");
+      for (const [uid, email] of Array.from(emailByUser.entries())) {
+        const nsEmp = email ? empByEmail.get(email) : undefined;
+        // accounts@pbhk.info 係 admin 服務帳號，唔係真員工 — 唔好帶入 Employee 欄
+        // （會 fallback 用返 cardholder）。
+        const fallback = email === "accounts@pbhk.info" ? "" : (email || "");
+        employeeByUser.set(uid, nsEmp || fallback);
+      }
 
       return (txns || []).map((t: any) => {
         const recon = reconMap.get(t.id);
@@ -968,6 +974,32 @@ export default function JournalExport() {
     [allBuiltEntries, selectedSubsidiary]
   );
 
+  // Already-posted card/month groups (written by the edge function on post).
+  // Key = externalId CARDJE-<last4>-<month>[-IC-<entity>], same derivation as
+  // the edge function's externalIdFor().
+  const { data: postedRows = [], refetch: refetchPosted } = useQuery<{ external_id: string; netsuite_id: string | null }[]>({
+    queryKey: ["ns-card-journal-posts"],
+    queryFn: async () => {
+      const { data, error } = await supabase.from("ns_card_journal_posts").select("external_id, netsuite_id");
+      if (error) return [];
+      return (data || []) as { external_id: string; netsuite_id: string | null }[];
+    },
+    retry: false,
+  });
+  const postedMap = useMemo(() => {
+    const m = new Map<string, string | null>();
+    for (const r of postedRows) m.set(r.external_id, r.netsuite_id);
+    return m;
+  }, [postedRows]);
+  const externalIdOf = (cardholder: string): string | null => {
+    const last4 = cardholder.match(/\(····([^)]+)\)/)?.[1];
+    const month = cardholder.match(/·\s*(\d{4}-\d{2})\s*$/)?.[1];
+    if (!last4 || !month) return null;
+    const ic = cardholder.match(/^IC\s+(.+?)\s+←/)?.[1];
+    const icTag = ic ? `-IC-${ic.replace(/[^A-Za-z0-9]+/g, "").slice(0, 20)}` : "";
+    return `CARDJE-${last4}-${month}${icTag}`;
+  };
+
   // Group entries by cardholder for display
   const cardGroups = useMemo(() => {
     const map = new Map<string, JournalEntry[]>();
@@ -1168,6 +1200,7 @@ export default function JournalExport() {
           (res.created ? " — 請入 NetSuite approve。" : ""),
         variant: res.failed > 0 ? "destructive" : undefined,
       });
+      refetchPosted(); // update the 已 post 過 badges immediately
     } catch (e: any) {
       toast({ title: "Post 失敗", description: String(e?.message || e).slice(0, 300), variant: "destructive" });
     } finally {
@@ -1416,6 +1449,8 @@ export default function JournalExport() {
       {/* Per-card details */}
       {cardGroups.map(([cardholder, entries]) => {
         const expanded = expandedCards.has(cardholder);
+        const extId = externalIdOf(cardholder);
+        const postedNsId = extId != null && postedMap.has(extId) ? postedMap.get(extId) : undefined;
         return (
           <Card key={cardholder}>
             <CardHeader className="pb-2 cursor-pointer" onClick={() => toggleCard(cardholder)}>
@@ -1423,6 +1458,13 @@ export default function JournalExport() {
                 {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                 {cardholder}
                 <Badge variant="outline" className="text-xs">{entries.length} lines</Badge>
+                {postedNsId !== undefined && (
+                  <Badge className="ml-auto text-xs bg-green-600/15 text-green-700 dark:text-green-400 border border-green-600/40 hover:bg-green-600/15"
+                    title={postedNsId ? `NetSuite internal id ${postedNsId}` : "已 post 上 NetSuite"}
+                    data-testid={`badge-posted-${cardholder}`}>
+                    已 post 過 ✓{postedNsId ? ` NS-${postedNsId}` : ""}
+                  </Badge>
+                )}
               </CardTitle>
             </CardHeader>
             {expanded && (
