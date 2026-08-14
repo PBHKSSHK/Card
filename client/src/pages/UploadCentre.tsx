@@ -2301,15 +2301,20 @@ export default function UploadCentre() {
 
   const [searchFilter, setSearchFilter] = useState("");
   const [showDuplicatesOnly, setShowDuplicatesOnly] = useState(false);
+  // Upload History pagination
+  const [histPage, setHistPage] = useState(0);
+  const [histPerPage, setHistPerPage] = useState(20);
 
   const { data: recentBatches } = useQuery({
     queryKey: ["upload-batches"],
     queryFn: async () => {
+      // Bank statement batches live in the Bank Upload Centre — keep them out of here
       const { data, error } = await supabase
         .from("upload_batches")
         .select("*")
+        .or("module.neq.bank,module.is.null")
         .order("uploaded_at", { ascending: false })
-        .limit(100);
+        .limit(500);
       if (error) throw error;
       return data as UploadBatch[];
     },
@@ -2366,6 +2371,11 @@ export default function UploadCentre() {
       return true;
     });
   }, [recentBatches, searchFilter, showDuplicatesOnly, duplicateBatchIds]);
+
+  // History pagination slices (每頁顯示行數可以揀)
+  const histTotalPages = Math.max(1, Math.ceil(filteredBatches.length / histPerPage));
+  const histSafePage = Math.min(histPage, histTotalPages - 1);
+  const pagedBatches = filteredBatches.slice(histSafePage * histPerPage, (histSafePage + 1) * histPerPage);
 
   const handleRemoveBatch = useCallback(async (batchId: string) => {
     try {
@@ -2490,12 +2500,12 @@ export default function UploadCentre() {
                   type="text"
                   placeholder="Search file / period / last4..."
                   value={searchFilter}
-                  onChange={(e) => setSearchFilter(e.target.value)}
+                  onChange={(e) => { setSearchFilter(e.target.value); setHistPage(0); }}
                   className="text-xs px-2 py-1 border border-border rounded w-56 bg-background"
                   data-testid="input-search-batches"
                 />
                 <button
-                  onClick={() => setShowDuplicatesOnly(!showDuplicatesOnly)}
+                  onClick={() => { setShowDuplicatesOnly(!showDuplicatesOnly); setHistPage(0); }}
                   className={`text-xs px-2 py-1 rounded border ${
                     showDuplicatesOnly
                       ? "bg-amber-100 border-amber-300 text-amber-800"
@@ -2527,7 +2537,7 @@ export default function UploadCentre() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredBatches.map((b) => (
+                  {pagedBatches.map((b) => (
                     <BatchRow
                       key={b.id}
                       batch={b}
@@ -2545,6 +2555,29 @@ export default function UploadCentre() {
                   )}
                 </tbody>
               </table>
+            </div>
+            {/* History pagination: Page X of Y (N total items) · 每頁顯示行數 */}
+            <div className="flex items-center justify-between gap-2 flex-wrap py-1.5 px-1 text-xs text-muted-foreground">
+              <div className="flex items-center gap-1.5">
+                <Button variant="outline" size="sm" className="h-6 px-2 text-xs"
+                  disabled={histSafePage === 0} onClick={() => setHistPage(histSafePage - 1)} data-testid="hist-prev-page">‹</Button>
+                <span className="tabular-nums">Page {histSafePage + 1} of {histTotalPages} ({filteredBatches.length} total items)</span>
+                <Button variant="outline" size="sm" className="h-6 px-2 text-xs"
+                  disabled={histSafePage >= histTotalPages - 1} onClick={() => setHistPage(histSafePage + 1)} data-testid="hist-next-page">›</Button>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span>showing</span>
+                <Select value={String(histPerPage)} onValueChange={(v) => { setHistPerPage(Number(v)); setHistPage(0); }}>
+                  <SelectTrigger className="h-6 w-20 text-xs" data-testid="hist-per-page"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="20">20</SelectItem>
+                    <SelectItem value="50">50</SelectItem>
+                    <SelectItem value="100">100</SelectItem>
+                    <SelectItem value="200">200</SelectItem>
+                  </SelectContent>
+                </Select>
+                <span>items per page</span>
+              </div>
             </div>
           </CardContent>
         </Card>

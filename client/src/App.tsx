@@ -17,6 +17,7 @@ import JournalExport from "@/pages/JournalExport";
 import BundleDownload from "@/pages/BundleDownload";
 import BuReport from "@/pages/BuReport";
 import BankRecon from "@/pages/BankRecon";
+import BankUploadCentre from "@/pages/BankUploadCentre";
 import ClaimsPage from "@/pages/ClaimsPage";
 import NewClaimPage from "@/pages/NewClaimPage";
 import ClaimDetailPage from "@/pages/ClaimDetailPage";
@@ -69,6 +70,7 @@ function AppRouter() {
         <Route path="/bundle">{() => <Gate module="card" superOnly component={BundleDownload} />}</Route>
         <Route path="/report">{() => <Gate module="card" component={BuReport} />}</Route>
         {/* Bank 模組 (owner/admin only) */}
+        <Route path="/bank-upload">{() => <Gate module="bank" superOnly component={BankUploadCentre} />}</Route>
         <Route path="/bank-recon">{() => <Gate module="bank" superOnly component={BankRecon} />}</Route>
         {/* Claims 模組 */}
         <Route path="/claims/inbox">{() => <Gate module="claims" component={ApprovalInboxPage} />}</Route>

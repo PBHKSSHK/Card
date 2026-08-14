@@ -21,6 +21,7 @@ const ccNavItems = [
 ];
 
 const bankNavItems = [
+  { href: "/bank-upload", label: "Bank Upload", icon: Upload, superOnly: true },
   { href: "/bank-recon", label: "Bank Recon", icon: Landmark, superOnly: true },
 ];
 
