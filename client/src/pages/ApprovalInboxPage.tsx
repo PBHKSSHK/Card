@@ -16,7 +16,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   Inbox, Receipt, Car, CheckCircle2, XCircle, FileCheck,
   Keyboard, FileText, ChevronRight, User as UserIcon, ArrowDown,
-  AlertCircle,
+  AlertCircle, HandCoins,
 } from "lucide-react";
 
 type Mode = "team_head" | "final" | "all";
@@ -458,7 +458,7 @@ export default function ApprovalInboxPage() {
               {!isLoading && items.map((item: any) => {
                 const isActive = item.id === selectedId;
                 const isBulked = bulkSelected.has(item.id);
-                const Icon = item.claim_type === "expenses" ? Receipt : Car;
+                const Icon = item.claim_type === "expenses" ? Receipt : item.claim_type === "payment" ? HandCoins : Car;
                 return (
                   <div key={item.id}
                     onClick={() => setSelectedId(item.id)}
@@ -474,7 +474,7 @@ export default function ApprovalInboxPage() {
                         onClick={(e) => e.stopPropagation()}
                         className="mt-1"
                       />
-                      <Icon size={14} className={`mt-1 ${item.claim_type === "expenses" ? "text-blue-500" : "text-orange-500"}`} />
+                      <Icon size={14} className={`mt-1 ${item.claim_type === "expenses" ? "text-blue-500" : item.claim_type === "payment" ? "text-emerald-600" : "text-orange-500"}`} />
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between gap-1">
                           <span className="font-mono text-[11px] font-medium truncate">{item.batch_no}</span>
@@ -524,10 +524,20 @@ export default function ApprovalInboxPage() {
                         </button>
                       </div>
                       <div className="text-xs mt-0.5">
-                        {selected.claim_type === "expenses" ? "日常駛費" : "交通費"} ·{" "}
+                        {selected.claim_type === "expenses" ? "日常駛費" : selected.claim_type === "payment" ? "付款申請" : "交通費"} ·{" "}
                         <span className="font-medium">{selected.full_name}</span>
                         {selected.nick_name && <span className="text-muted-foreground"> (@{selected.nick_name})</span>}
                       </div>
+                      {selected.claim_type === "payment" && (
+                        <div className="text-[10px] text-emerald-700 dark:text-emerald-400">
+                          收款人: <span className="font-medium">{selected.payee_name || "—"}</span>
+                          {selected.payee_type === "freelancer" ? " (Freelancer)" : selected.payee_type === "supplier" ? " (Supplier)" : ""}
+                          {selected.payment_method === "fps"
+                            ? ` · FPS: ${selected.payee_fps_id || "—"}`
+                            : selected.payee_bank_account ? ` · ${selected.payee_bank || ""} ${selected.payee_bank_account}` : ""}
+                          {selected.supplier_invoice_no && ` · INV: ${selected.supplier_invoice_no}`}
+                        </div>
+                      )}
                       <div className="text-[10px] text-muted-foreground">
                         {selected.subsidiary_full_name} · {selected.charge_to_code} · 提交 {selected.submit_date}
                       </div>
@@ -576,7 +586,7 @@ export default function ApprovalInboxPage() {
                                 {l.taxi_reason && <div className="italic">原因: {l.taxi_reason}</div>}
                               </div>
                             )}
-                            {selected.claim_type === "expenses" && l.client_name && (
+                            {selected.claim_type !== "transportation" && l.client_name && (
                               <div className="text-[10px] text-muted-foreground">Client: {l.client_name}</div>
                             )}
                             {cat && (
@@ -590,7 +600,7 @@ export default function ApprovalInboxPage() {
                             <div className={`tabular-nums font-medium ${lineStatus === "rejected" ? "line-through text-muted-foreground" : ""}`}>
                               HK${Number(l.hkd_amount || 0).toFixed(2)}
                             </div>
-                            {selected.claim_type === "expenses" && l.original_amount && l.currency !== "HKD" && (
+                            {selected.claim_type !== "transportation" && l.original_amount && l.currency !== "HKD" && (
                               <div className="text-[10px] text-muted-foreground">{l.currency} {Number(l.original_amount).toFixed(2)} @ {Number(l.fx_rate).toFixed(4)}</div>
                             )}
                           </div>

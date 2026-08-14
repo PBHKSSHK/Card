@@ -27,9 +27,10 @@ interface NsIntercompanyAccount {
 interface ClaimBatch {
   id: string;
   batch_no: string | null;
-  claim_type: "expenses" | "transportation";
+  claim_type: "expenses" | "transportation" | "payment";
   claimant_user_id: string;
   full_name: string | null;
+  payee_name?: string | null;
   department: string | null;
   submit_date: string | null;
   period_month: string | null;
@@ -138,7 +139,7 @@ const LS_REIMBURSEMENT_KEY = "claim_journal_reimbursement_account";
 
 export default function ClaimJournalExport() {
   const [selectedPeriod, setSelectedPeriod] = useState<string>("all");
-  const [selectedType, setSelectedType] = useState<"all" | "transportation" | "expenses">("all");
+  const [selectedType, setSelectedType] = useState<"all" | "transportation" | "expenses" | "payment">("all");
   const [expandedBatches, setExpandedBatches] = useState<Set<string>>(new Set());
   const [showUnmappedList, setShowUnmappedList] = useState(false);
   const [highlightedKey, setHighlightedKey] = useState<string | null>(null);
@@ -165,7 +166,7 @@ export default function ClaimJournalExport() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("claim_batches")
-        .select("id,batch_no,claim_type,claimant_user_id,full_name,department,submit_date,period_month,charge_to_code,entity_code,subsidiary_full_name,department_name,status,approved_at,exported_at,total_hkd,line_count")
+        .select("id,batch_no,claim_type,claimant_user_id,full_name,department,submit_date,period_month,charge_to_code,entity_code,subsidiary_full_name,department_name,status,approved_at,exported_at,total_hkd,line_count,payee_name")
         // Only FINALLY-approved (or already-exported) batches are eligible.
         // team_head_approved is deliberately excluded: a team-head signature is
         // not final approval, and posting it would bypass the last human
@@ -522,6 +523,12 @@ export default function ClaimJournalExport() {
           nameWarning = `No NS employee found for claimant (user_id: ${batch.claimant_user_id.slice(0,8)}...)`;
         }
       }
+      // 付款申請: 收款人係 supplier / freelancer，唔係同事 — Name 欄直接用
+      // payee 名 (NetSuite 對應 vendor)，employee lookup / IC vendor 唔適用。
+      if (batch.claim_type === "payment") {
+        employeeNameField = batch.payee_name || "";
+        nameWarning = employeeNameField ? undefined : "Payment requisition missing payee name";
+      }
 
       // Journal date — approved_at fallback to submit_date, fallback to first line_date
       // approved_at is a timestamptz: convert to HK-local date, not a raw UTC slice
@@ -633,7 +640,9 @@ export default function ClaimJournalExport() {
         currency: "HKD",
         debit: null,
         credit: totalHkd,
-        memo: `Accounts payable - ${claimantLabel}${isCrossSub ? ` (IC: ${employeeEntity}→${payerEntityNormalized})` : ""}`,
+        memo: batch.claim_type === "payment"
+          ? `Accounts payable - ${batch.payee_name || "?"} (req by ${batch.full_name || "?"}${batch.batch_no ? `, ${batch.batch_no}` : ""})`
+          : `Accounts payable - ${claimantLabel}${isCrossSub ? ` (IC: ${employeeEntity}→${payerEntityNormalized})` : ""}`,
         subsidiary: payerSubsidiary,
         department: payerDept,
         class_project: "",
@@ -823,6 +832,7 @@ export default function ClaimJournalExport() {
                   <SelectItem value="all">All Types</SelectItem>
                   <SelectItem value="transportation">交通費 Transportation</SelectItem>
                   <SelectItem value="expenses">General Expenses</SelectItem>
+                  <SelectItem value="payment">付款申請 Payment Requisition</SelectItem>
                 </SelectContent>
               </Select>
             </div>

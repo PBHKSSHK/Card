@@ -17,7 +17,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   ArrowLeft, Receipt, Car, CheckCircle2, XCircle, FileText,
   Send, FileDown, Clock, FileCheck, User as UserIcon, Download,
-  Plus, Trash2, AlertCircle,
+  Plus, Trash2, AlertCircle, HandCoins,
 } from "lucide-react";
 
 // Status states that allow attaching extra receipts post-submit
@@ -525,9 +525,9 @@ export default function ClaimDetailPage() {
       if (l.line_status === "rejected") continue;
       const cat = l.expense_category_code ? categoryMap.get(l.expense_category_code) : null;
       const expenseAccount = cat?.ns_account_number || FALLBACK_ACCOUNT;
-      const memo = claimType === "expenses"
-        ? `${batch.batch_no} ${l.description || ""} ${l.client_name ? `(${l.client_name})` : ""}`.trim()
-        : `${batch.batch_no} ${l.means_of_transport || ""} ${l.location_from || ""} → ${l.destination || ""}`.trim();
+      const memo = claimType === "transportation"
+        ? `${batch.batch_no} ${l.means_of_transport || ""} ${l.location_from || ""} → ${l.destination || ""}`.trim()
+        : `${batch.batch_no} ${l.description || ""} ${l.client_name ? `(${l.client_name})` : ""}`.trim();
       const debit = Number(l.hkd_amount || 0);
       total += debit;
       rows.push({
@@ -548,7 +548,7 @@ export default function ClaimDetailPage() {
       Account: STAFF_PAYABLE_ACCOUNT,
       Department: department,
       Project: "",
-      Memo: `${batch.batch_no} payable to ${claimantName}`,
+      Memo: `${batch.batch_no} payable to ${claimType === "payment" ? (batch.payee_name || claimantName) : claimantName}`,
       Debit: null,
       Credit: total,
     });
@@ -616,7 +616,7 @@ export default function ClaimDetailPage() {
     return <div className="p-12 text-center text-muted-foreground">找不到呢張 claim</div>;
   }
 
-  const Icon = claimType === "expenses" ? Receipt : Car;
+  const Icon = claimType === "expenses" ? Receipt : claimType === "payment" ? HandCoins : Car;
   const statusInfo = STATUS_LABELS[status] || STATUS_LABELS.draft;
   const totalHkd = lines.reduce((s, l) => s + Number(l.hkd_amount || 0), 0);
   const approvedTotalHkd = lines.reduce((s, l: any) => l.line_status === "rejected" ? s : s + Number(l.hkd_amount || 0), 0);
@@ -634,7 +634,7 @@ export default function ClaimDetailPage() {
             <div>
               <div className="text-xl font-bold font-mono">{batch.batch_no}</div>
               <div className="text-xs text-muted-foreground">
-                {claimType === "expenses" ? "日常駛費" : "交通費用"} · {batch.period_month}
+                {claimType === "expenses" ? "日常駛費" : claimType === "payment" ? "付款申請" : "交通費用"} · {batch.period_month}
               </div>
             </div>
           </div>
@@ -667,6 +667,42 @@ export default function ClaimDetailPage() {
             <div className="text-xs text-muted-foreground">{lines.length} 行</div>
           </div>
         </div>
+
+        {/* 付款申請 — 收款人 + 付款資料 */}
+        {claimType === "payment" && (
+          <div className="mt-3 pt-3 border-t border-border/40 grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+            <div>
+              <div className="text-xs text-muted-foreground">收款人</div>
+              <div className="font-medium">{batch.payee_name || "—"}</div>
+              <div className="text-xs text-muted-foreground">
+                {batch.payee_type === "freelancer" ? "Freelancer 自由工作者" : batch.payee_type === "supplier" ? "Supplier 供應商" : ""}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">付款方式</div>
+              <div className="font-medium">
+                {({ bank_transfer: "銀行轉賬", fps: "FPS 轉數快", cheque: "支票", autopay: "自動轉賬", other: "其他" } as Record<string, string>)[batch.payment_method] || "—"}
+              </div>
+              {batch.payment_due_date && <div className="text-xs text-muted-foreground">到期: {batch.payment_due_date}</div>}
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">收款戶口</div>
+              {batch.payment_method === "fps" ? (
+                <div className="font-mono text-xs">FPS: {batch.payee_fps_id || "—"}</div>
+              ) : (
+                <>
+                  <div className="text-xs">{batch.payee_bank || "—"}</div>
+                  <div className="font-mono text-xs">{batch.payee_bank_account || ""}</div>
+                </>
+              )}
+              {batch.payee_account_name && <div className="text-xs text-muted-foreground">{batch.payee_account_name}</div>}
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">Supplier Invoice #</div>
+              <div className="font-mono text-xs">{batch.supplier_invoice_no || "—"}</div>
+            </div>
+          </div>
+        )}
 
         {batch.assigned_team_head_name && (
           <div className="mt-3 pt-3 border-t border-border/40 flex items-center gap-3 text-xs">
@@ -713,14 +749,14 @@ export default function ClaimDetailPage() {
                 <th className="px-3 py-2 text-left">#</th>
                 <th className="px-3 py-2 text-left">日期</th>
                 <th className="px-3 py-2 text-left">Project</th>
-                {claimType === "expenses" && <th className="px-3 py-2 text-left">Client</th>}
+                {claimType !== "transportation" && <th className="px-3 py-2 text-left">Client</th>}
                 {claimType === "transportation" && <>
                   <th className="px-3 py-2 text-left">交通工具</th>
                   <th className="px-3 py-2 text-left">類別 / Account</th>
                   <th className="px-3 py-2 text-left">由 → 去</th>
                 </>}
                 <th className="px-3 py-2 text-left">說明</th>
-                {claimType === "expenses" && <>
+                {claimType !== "transportation" && <>
                   <th className="px-3 py-2 text-left">類別 / Account</th>
                   <th className="px-3 py-2 text-right">幣別 / 原幣</th>
                   <th className="px-3 py-2 text-right">FX</th>
@@ -743,7 +779,7 @@ export default function ClaimDetailPage() {
                   <td className="px-3 py-2 tabular-nums">{l.item_no}</td>
                   <td className="px-3 py-2 tabular-nums">{l.line_date}</td>
                   <td className="px-3 py-2 font-mono">{l.project_code || "—"}</td>
-                  {claimType === "expenses" && <td className="px-3 py-2">{l.client_name || "—"}</td>}
+                  {claimType !== "transportation" && <td className="px-3 py-2">{l.client_name || "—"}</td>}
                   {claimType === "transportation" && <>
                     <td className="px-3 py-2">
                       {l.means_of_transport}
@@ -758,7 +794,7 @@ export default function ClaimDetailPage() {
                     <td className="px-3 py-2 text-xs">{l.location_from} → {l.destination}</td>
                   </>}
                   <td className="px-3 py-2">{l.description}</td>
-                  {claimType === "expenses" && <>
+                  {claimType !== "transportation" && <>
                     <td className="px-3 py-2 text-xs">
                       {(() => {
                         const cat = l.expense_category_code ? categoryMap.get(l.expense_category_code) : null;
@@ -867,14 +903,14 @@ export default function ClaimDetailPage() {
             </tbody>
             <tfoot>
               <tr className="border-t-2 border-border font-medium bg-muted/20">
-                <td colSpan={claimType === "expenses" ? 9 : 7} className="px-3 py-2 text-right">TOTAL</td>
+                <td colSpan={claimType !== "transportation" ? 9 : 7} className="px-3 py-2 text-right">TOTAL</td>
                 <td className="px-3 py-2 text-right tabular-nums">${totalHkd.toFixed(2)}</td>
                 <td></td>
                 {canReviewPerLine && <td></td>}
               </tr>
               {approvedTotalHkd !== totalHkd && (
                 <tr className="bg-emerald-500/10 text-xs">
-                  <td colSpan={claimType === "expenses" ? 9 : 7} className="px-3 py-2 text-right font-medium">接受金額 (不含退回行)</td>
+                  <td colSpan={claimType !== "transportation" ? 9 : 7} className="px-3 py-2 text-right font-medium">接受金額 (不含退回行)</td>
                   <td className="px-3 py-2 text-right tabular-nums text-emerald-700 font-bold">${approvedTotalHkd.toFixed(2)}</td>
                   <td></td>
                   {canReviewPerLine && <td></td>}

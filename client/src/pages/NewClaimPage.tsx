@@ -19,10 +19,22 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  ArrowLeft, Plus, Trash2, Receipt, Car, Save, Send, Upload, X, UserCog, RefreshCw,
+  ArrowLeft, Plus, Trash2, Receipt, Car, Save, Send, Upload, X, UserCog, RefreshCw, HandCoins,
 } from "lucide-react";
 
-type ClaimType = "expenses" | "transportation";
+type ClaimType = "expenses" | "transportation" | "payment";
+
+const PAYEE_TYPES = [
+  { code: "supplier", label: "Supplier 供應商" },
+  { code: "freelancer", label: "Freelancer 自由工作者" },
+];
+const PAYMENT_METHODS = [
+  { code: "bank_transfer", label: "銀行轉賬" },
+  { code: "fps", label: "FPS 轉數快" },
+  { code: "cheque", label: "支票" },
+  { code: "autopay", label: "自動轉賬 Autopay" },
+  { code: "other", label: "其他" },
+];
 
 const MEANS_OF_TRANSPORT = [
   { code: "TAXI", label: "Taxi 的士" },
@@ -93,7 +105,8 @@ function genKey() {
 
 function makeBlankLine(itemNo: number, type: ClaimType): LineForm {
   const today = todayHK();  // HK-local date (fix #4)
-  if (type === "expenses") {
+  // payment (付款申請) 明細同 expenses 一樣：project / category / 幣別 / 金額
+  if (type === "expenses" || type === "payment") {
     return {
       _key: genKey(), item_no: itemNo, line_date: today,
       project_code: "", description: "", has_receipt: true,
@@ -123,7 +136,9 @@ export default function NewClaimPage() {
   const editId = editParams?.id || null;
   const isEdit = !!editId;
   const [initialType, setInitialType] = useState<ClaimType>(
-    params?.type === "transportation" ? "transportation" : "expenses"
+    params?.type === "transportation" ? "transportation"
+      : params?.type === "payment" ? "payment"
+      : "expenses"
   );
   // claim type — new 由 URL 決定；edit 由 loaded batch 決定（先用初始值，load 完會更新）
   const claimType: ClaimType = initialType;
@@ -152,6 +167,17 @@ export default function NewClaimPage() {
 
   // 代人填：predefined claimant_user_id；冇揀就用 login user
   const [claimantUserId, setClaimantUserId] = useState<string>(session?.user?.id || "");
+
+  // Payment requisition (付款申請) — 收款人 + 付款資料
+  const [payeeName, setPayeeName] = useState("");
+  const [payeeType, setPayeeType] = useState("supplier");
+  const [paymentMethod, setPaymentMethod] = useState("bank_transfer");
+  const [payeeBank, setPayeeBank] = useState("");
+  const [payeeBankAccount, setPayeeBankAccount] = useState("");
+  const [payeeAccountName, setPayeeAccountName] = useState("");
+  const [payeeFpsId, setPayeeFpsId] = useState("");
+  const [paymentDueDate, setPaymentDueDate] = useState("");
+  const [supplierInvoiceNo, setSupplierInvoiceNo] = useState("");
 
   // Sync default claimant 同 fullName 跟住 profile 更新
   useEffect(() => {
@@ -243,6 +269,16 @@ export default function NewClaimPage() {
         setPeriodMonth(batch.period_month || currentMonthHK());  // HK-local fallback (fix #4)
         setSubmitDate(batch.submit_date || todayHK());  // HK-local fallback (fix #4)
         setClaimantUserId(batch.claimant_user_id || myUid || "");
+        // 付款申請 fields
+        setPayeeName(batch.payee_name || "");
+        setPayeeType(batch.payee_type || "supplier");
+        setPaymentMethod(batch.payment_method || "bank_transfer");
+        setPayeeBank(batch.payee_bank || "");
+        setPayeeBankAccount(batch.payee_bank_account || "");
+        setPayeeAccountName(batch.payee_account_name || "");
+        setPayeeFpsId(batch.payee_fps_id || "");
+        setPaymentDueDate(batch.payment_due_date || "");
+        setSupplierInvoiceNo(batch.supplier_invoice_no || "");
 
         // 2. Load lines
         const { data: existingLines } = await supabase
@@ -428,7 +464,7 @@ export default function NewClaimPage() {
       const isFxFieldChange =
         ("original_amount" in patch || "fx_rate" in patch || "currency" in patch)
         && !("hkd_amount" in patch);
-      if (isFxFieldChange && claimType === "expenses") {
+      if (isFxFieldChange && claimType !== "transportation") {
         const orig = parseFloat(merged.original_amount || "");
         const fx = parseFloat(merged.fx_rate || "");
         if (!isNaN(orig) && !isNaN(fx) && orig > 0 && fx > 0) {
@@ -520,11 +556,31 @@ export default function NewClaimPage() {
         toast({ title: "未有明細", description: "至少需要一行有金額嘅明細", variant: "destructive" });
         return;
       }
+      if (claimType === "payment" && !payeeName.trim()) {
+        toast({ title: "缺少收款人", description: "付款申請必須填收款人 (supplier / freelancer 名稱)", variant: "destructive" });
+        return;
+      }
     }
 
     setSaving(true);
     try {
       const effectiveClaimant = isSuperUser ? (claimantUserId || session.user.id) : session.user.id;
+      // 收款人/付款欄位 — 只有付款申請先有值，其他類型全 null
+      const payeeFields = claimType === "payment" ? {
+        payee_name: payeeName.trim() || null,
+        payee_type: payeeType || null,
+        payment_method: paymentMethod || null,
+        payee_bank: payeeBank.trim() || null,
+        payee_bank_account: payeeBankAccount.trim() || null,
+        payee_account_name: payeeAccountName.trim() || null,
+        payee_fps_id: payeeFpsId.trim() || null,
+        payment_due_date: paymentDueDate || null,
+        supplier_invoice_no: supplierInvoiceNo.trim() || null,
+      } : {
+        payee_name: null, payee_type: null, payment_method: null,
+        payee_bank: null, payee_bank_account: null, payee_account_name: null,
+        payee_fps_id: null, payment_due_date: null, supplier_invoice_no: null,
+      };
       let batch: any;
 
       if (isEdit && editId) {
@@ -541,6 +597,7 @@ export default function NewClaimPage() {
             submit_date: submitDate,
             period_month: periodMonth,
             charge_to_code: chargeToCode || null,
+            ...payeeFields,
             // Fix #1: keep the batch in a lines-writable state (draft) while we
             // re-insert claim_lines below; the flip to "submitted" happens as the
             // LAST step (RLS only allows line writes while draft/rejected).
@@ -579,6 +636,7 @@ export default function NewClaimPage() {
             submit_date: submitDate,
             period_month: periodMonth,
             charge_to_code: chargeToCode || null,
+            ...payeeFields,
             // Fix #1: always insert as draft so claim_lines (below) are writable
             // under RLS; flip to "submitted" as the LAST step if asSubmit.
             status: "draft",
@@ -777,8 +835,10 @@ export default function NewClaimPage() {
     }
   }
 
-  const Icon = claimType === "expenses" ? Receipt : Car;
-  const typeLabel = claimType === "expenses" ? "日常駛費 Claim" : "交通費 Claim";
+  const Icon = claimType === "expenses" ? Receipt : claimType === "payment" ? HandCoins : Car;
+  const typeLabel = claimType === "expenses" ? "日常駛費 Claim"
+    : claimType === "payment" ? "付款申請 Payment Requisition"
+    : "交通費 Claim";
   const pageTitle = isEdit
     ? (originalStatus === "rejected" ? `修改退回申請 · ${typeLabel}` : `修改草稿 · ${typeLabel}`)
     : `新建 ${typeLabel}`;
@@ -891,6 +951,74 @@ export default function NewClaimPage() {
         </div>
       </CardContent></Card>
 
+      {/* 付款申請 — 收款人 + 付款資料 */}
+      {claimType === "payment" && (
+        <Card><CardContent className="p-4 space-y-3">
+          <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+            <HandCoins size={15} /> 收款人資料 (Payee)
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div>
+              <Label className="text-xs">收款人名稱 *</Label>
+              <Input value={payeeName} onChange={(e) => setPayeeName(e.target.value)}
+                placeholder="Supplier / freelancer 名" data-testid="input-payee-name" />
+            </div>
+            <div>
+              <Label className="text-xs">類型</Label>
+              <Select value={payeeType} onValueChange={setPayeeType}>
+                <SelectTrigger data-testid="select-payee-type"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {PAYEE_TYPES.map(t => <SelectItem key={t.code} value={t.code}>{t.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs">付款方式</Label>
+              <Select value={paymentMethod} onValueChange={setPaymentMethod}>
+                <SelectTrigger data-testid="select-payment-method"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {PAYMENT_METHODS.map(m => <SelectItem key={m.code} value={m.code}>{m.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            {paymentMethod === "fps" ? (
+              <div>
+                <Label className="text-xs">FPS ID / 電話</Label>
+                <Input value={payeeFpsId} onChange={(e) => setPayeeFpsId(e.target.value)} data-testid="input-payee-fps" />
+              </div>
+            ) : (
+              <>
+                <div>
+                  <Label className="text-xs">銀行</Label>
+                  <Input value={payeeBank} onChange={(e) => setPayeeBank(e.target.value)}
+                    placeholder="e.g. HSBC / Hang Seng" data-testid="input-payee-bank" />
+                </div>
+                <div>
+                  <Label className="text-xs">戶口號碼</Label>
+                  <Input value={payeeBankAccount} onChange={(e) => setPayeeBankAccount(e.target.value)} data-testid="input-payee-account" />
+                </div>
+              </>
+            )}
+            <div>
+              <Label className="text-xs">戶口名稱</Label>
+              <Input value={payeeAccountName} onChange={(e) => setPayeeAccountName(e.target.value)}
+                placeholder="同銀行紀錄一致" data-testid="input-payee-account-name" />
+            </div>
+            <div>
+              <Label className="text-xs">Supplier Invoice / 報價單 #</Label>
+              <Input value={supplierInvoiceNo} onChange={(e) => setSupplierInvoiceNo(e.target.value)} data-testid="input-supplier-invoice" />
+            </div>
+            <div>
+              <Label className="text-xs">付款到期日</Label>
+              <Input type="date" value={paymentDueDate} onChange={(e) => setPaymentDueDate(e.target.value)} data-testid="input-payment-due" />
+            </div>
+          </div>
+          <div className="text-[10px] text-muted-foreground">
+            記得喺下面附件位上載 supplier invoice / 報價單，方便審批。
+          </div>
+        </CardContent></Card>
+      )}
+
       {/* Lines */}
       <Card><CardContent className="p-4">
         <div className="flex items-center justify-between mb-3">
@@ -907,20 +1035,20 @@ export default function NewClaimPage() {
                 <th className="px-2 py-2 text-left w-12">#</th>
                 <th className="px-2 py-2 text-left">日期</th>
                 <th className="px-2 py-2 text-left">Project</th>
-                {claimType === "expenses" && <th className="px-2 py-2 text-left">Client</th>}
+                {claimType !== "transportation" && <th className="px-2 py-2 text-left">Client</th>}
                 {claimType === "transportation" && <>
                   <th className="px-2 py-2 text-left">交通工具</th>
                   <th className="px-2 py-2 text-left">類別</th>
                 </>}
                 <th className="px-2 py-2 text-left">說明 (由邊到邊 / 用途)</th>
-                {claimType === "expenses" && <>
+                {claimType !== "transportation" && <>
                   <th className="px-2 py-2 text-left">Category</th>
                   <th className="px-2 py-2 text-left">幣別</th>
                   <th className="px-2 py-2 text-right">原幣金額</th>
                   <th className="px-2 py-2 text-right">FX</th>
                 </>}
                 <th className="px-2 py-2 text-right">HKD 金額</th>
-                {claimType === "expenses" && <th className="px-2 py-2 text-right">Billable</th>}
+                {claimType !== "transportation" && <th className="px-2 py-2 text-right">Billable</th>}
                 <th className="px-2 py-2 text-center w-[140px]">收據 (可多張)</th>
                 <th className="px-2 py-2 w-8"></th>
               </tr>
@@ -955,7 +1083,7 @@ export default function NewClaimPage() {
                       </SelectContent>
                     </Select>
                   </td>
-                  {claimType === "expenses" && (
+                  {claimType !== "transportation" && (
                     <td className="px-2 py-2">
                       <Input
                         value={l.client_name || ""}
@@ -999,7 +1127,7 @@ export default function NewClaimPage() {
                       placeholder={claimType === "transportation" ? "由 Mong Kok 到 Chai Wan (送貨)" : "說明 / 用途"}
                     />
                   </td>
-                  {claimType === "expenses" && <>
+                  {claimType !== "transportation" && <>
                     <td className="px-2 py-2">
                       <Select value={l.expense_category_code || "__none__"} onValueChange={(v) => updateLine(l._key, { expense_category_code: v === "__none__" ? "" : v })}>
                         <SelectTrigger className="h-7 text-xs min-w-[160px]"><SelectValue placeholder="— 選費用類別 —" /></SelectTrigger>
@@ -1058,7 +1186,7 @@ export default function NewClaimPage() {
                     </td>
                   </>}
                   <td className="px-2 py-2"><Input type="number" step="0.01" value={l.hkd_amount} onChange={(e) => updateLine(l._key, { hkd_amount: e.target.value })} className="h-7 text-xs text-right font-medium w-[100px]" /></td>
-                  {claimType === "expenses" && (
+                  {claimType !== "transportation" && (
                     <td className="px-2 py-2"><Input type="number" step="0.01" value={l.billable_to_client_hkd} onChange={(e) => updateLine(l._key, { billable_to_client_hkd: e.target.value })} className="h-7 text-xs text-right w-[90px]" /></td>
                   )}
                   <td className="px-2 py-2 text-center">
@@ -1124,11 +1252,11 @@ export default function NewClaimPage() {
             </tbody>
             <tfoot>
               <tr className="border-t-2 border-border font-medium">
-                <td colSpan={claimType === "expenses" ? 11 : 6} className="px-2 py-2 text-right">TOTAL</td>
+                <td colSpan={claimType !== "transportation" ? 11 : 6} className="px-2 py-2 text-right">TOTAL</td>
                 <td className="px-2 py-2 text-right tabular-nums">
                   HK${totalHkd.toFixed(2)}
                 </td>
-                <td colSpan={claimType === "expenses" ? 3 : 2}></td>
+                <td colSpan={claimType !== "transportation" ? 3 : 2}></td>
               </tr>
             </tfoot>
           </table>
