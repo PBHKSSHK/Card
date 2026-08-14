@@ -142,16 +142,17 @@ Deno.serve(async (req) => {
       groups.get(e.entry_no)!.push(e);
     }
 
-    // ---- resolve Class (project) + Customer/Vendor ids via SuiteQL ----
+    // ---- resolve Project (job) + Customer/Vendor ids via SuiteQL ----
+    // In this NetSuite account the P-codes are JOB (Project) records, not
+    // Classes — a JE line books to a project via its entity (Name) field.
     const projectIds = [...new Set(entries.map((e) => (e.class_project || '').trim()).filter(Boolean))];
     const entityCodes = [...new Set(entries.map((e) => (e.name || '').trim()).filter(Boolean))];
-    const classId = new Map<string, string>();
+    const jobId = new Map<string, string>();
     const entityRef = new Map<string, { id: string; kind: 'customer' | 'vendor' }>();
     if (projectIds.length > 0) {
-      const rows = await suiteql(`SELECT id, name FROM classification`);
-      for (const p of projectIds) {
-        const hit = rows.find((r: any) => r.name === p) || rows.find((r: any) => String(r.name || '').startsWith(p));
-        if (hit) classId.set(p, String(hit.id));
+      const inList = projectIds.map((c) => `'${c.replace(/'/g, "''")}'`).join(',');
+      for (const r of await suiteql(`SELECT id, entityid FROM job WHERE entityid IN (${inList})`)) {
+        jobId.set(String(r.entityid), String(r.id));
       }
     }
     const custCodes = entityCodes.filter((c) => /^C/i.test(c));
@@ -202,17 +203,18 @@ Deno.serve(async (req) => {
         else item.credit = Math.round(credit * 100) / 100;
         const did = l.department ? deptId.get(l.department) : undefined;
         if (did != null) item.department = { id: String(did) };
-        const cp = (l.class_project || '').trim();
-        if (cp) {
-          const cid = classId.get(cp);
-          if (cid) item.class = { id: cid };
-          else problems.push(`class not found in NetSuite: ${cp}`);
-        }
+        // Name (entity): Due-From/To lines carry a customer/vendor code;
+        // project lines book to the JOB via the same entity field.
         const nm = (l.name || '').trim();
+        const cp = (l.class_project || '').trim();
         if (nm) {
           const ref = entityRef.get(nm);
           if (ref) item.entity = { id: ref.id };
           else problems.push(`customer/vendor not found: ${nm}`);
+        } else if (cp) {
+          const jid = jobId.get(cp);
+          if (jid) item.entity = { id: jid };
+          else problems.push(`project (job) not found in NetSuite: ${cp}`);
         }
         items.push(item);
       }
