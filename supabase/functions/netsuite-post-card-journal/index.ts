@@ -82,7 +82,17 @@ function externalIdFor(cardholder: string): string | null {
   return `CARDJE-${last4}-${month}${icTag}`;
 }
 
+// Browser calls need CORS — supabase.functions.invoke sends an OPTIONS
+// preflight first; without these headers the browser blocks the request
+// ("Failed to send a request to the Edge Function").
+const CORS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+};
+
 Deno.serve(async (req) => {
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
   const svc = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
   try {
     // ---- authorize caller: service_role JWT, or owner/admin user ----
@@ -94,19 +104,19 @@ Deno.serve(async (req) => {
       const { data: prof } = await svc.from('user_profiles').select('role').eq('user_id', claims.sub).maybeSingle();
       okAuth = prof != null && ['owner', 'admin'].includes(prof.role);
     }
-    if (!okAuth) return new Response(JSON.stringify({ error: 'forbidden: owner/admin only' }), { status: 403 });
+    if (!okAuth) return new Response(JSON.stringify({ error: 'forbidden: owner/admin only' }), { status: 403, headers: CORS });
 
     const body = await req.json().catch(() => ({}));
     const dryRun = body.dry_run === true;
     const entries: InEntry[] = Array.isArray(body.entries) ? body.entries : [];
-    if (entries.length === 0) return new Response(JSON.stringify({ error: 'entries required' }), { status: 400 });
-    if (entries.length > 2000) return new Response(JSON.stringify({ error: 'too many lines (max 2000)' }), { status: 400 });
+    if (entries.length === 0) return new Response(JSON.stringify({ error: 'entries required' }), { status: 400, headers: CORS });
+    if (entries.length > 2000) return new Response(JSON.stringify({ error: 'too many lines (max 2000)' }), { status: 400, headers: CORS });
 
     // ---- config ----
     const { data: cfg, error: cfgErr } = await svc.rpc('ns_get_config');
     if (cfgErr) throw cfgErr;
     for (const k of ['ns_account_id', 'ns_tba_consumer_key', 'ns_tba_consumer_secret', 'ns_tba_token_id', 'ns_tba_token_secret']) {
-      if (!cfg?.[k]) return new Response(JSON.stringify({ error: `missing config: ${k}` }), { status: 500 });
+      if (!cfg?.[k]) return new Response(JSON.stringify({ error: `missing config: ${k}` }), { status: 500, headers: CORS });
     }
     const host = String(cfg.ns_account_id).toLowerCase().replace(/_/g, '-');
     const suiteql = async (q: string): Promise<any[]> => {
@@ -266,9 +276,9 @@ Deno.serve(async (req) => {
 
     return new Response(
       JSON.stringify({ ok: failed === 0, dry_run: dryRun, entries: groups.size, created, duplicates, failed, results }, null, 2),
-      { headers: { 'Content-Type': 'application/json' } },
+      { headers: { ...CORS, 'Content-Type': 'application/json' } },
     );
   } catch (e) {
-    return new Response(JSON.stringify({ error: String((e as Error)?.message || e).slice(0, 1500) }), { status: 500 });
+    return new Response(JSON.stringify({ error: String((e as Error)?.message || e).slice(0, 1500) }), { status: 500, headers: CORS });
   }
 });
