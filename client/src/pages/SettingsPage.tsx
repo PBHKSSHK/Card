@@ -772,7 +772,7 @@ function UserManagement() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("user_profiles")
-        .select("user_id, email, full_name, role, entity_scope, created_at")
+        .select("user_id, email, full_name, role, entity_scope, modules, created_at")
         .order("created_at", { ascending: true });
       if (error) throw error;
       return data as {
@@ -781,6 +781,7 @@ function UserManagement() {
         full_name: string | null;
         role: UserRoleOpt;
         entity_scope: string[] | null;
+        modules: string[] | null;
         created_at: string;
       }[];
     },
@@ -846,7 +847,7 @@ function UserManagement() {
   });
 
   const updateUserMutation = useMutation({
-    mutationFn: async ({ user_id, patch }: { user_id: string; patch: Partial<{ role: UserRoleOpt; entity_scope: string[]; full_name: string }> }) => {
+    mutationFn: async ({ user_id, patch }: { user_id: string; patch: Partial<{ role: UserRoleOpt; entity_scope: string[]; modules: string[]; full_name: string }> }) => {
       const { error } = await supabase.from("user_profiles").update(patch).eq("user_id", user_id);
       if (error) throw error;
     },
@@ -858,6 +859,12 @@ function UserManagement() {
       toast({ title: "更新失敗", description: err.message, variant: "destructive" });
     },
   });
+
+  const MODULE_OPTS: { key: string; label: string }[] = [
+    { key: "card", label: "Credit Card" },
+    { key: "bank", label: "Bank" },
+    { key: "claims", label: "Claims" },
+  ];
 
   const roleBadge = (r: UserRoleOpt) => {
     if (r === "owner") return "bg-amber-500/15 text-amber-700 dark:text-amber-400";
@@ -886,6 +893,7 @@ function UserManagement() {
                 <th className="text-left text-xs font-medium text-muted-foreground py-2">Email</th>
                 <th className="text-left text-xs font-medium text-muted-foreground py-2">Role</th>
                 <th className="text-left text-xs font-medium text-muted-foreground py-2">Entity Scope</th>
+                <th className="text-left text-xs font-medium text-muted-foreground py-2">可用模組</th>
                 <th className="text-left text-xs font-medium text-muted-foreground py-2">Created</th>
               </tr>
             </thead>
@@ -936,6 +944,37 @@ function UserManagement() {
                         ))}
                       </div>
                     )}
+                  </td>
+                  <td className="py-2">
+                    <div className="flex flex-wrap gap-1">
+                      {MODULE_OPTS.map(m => {
+                        const mods = u.modules ?? ["card", "bank", "claims"];
+                        const on = mods.includes(m.key);
+                        // Bank 頁面/數據本身只限 owner/admin — BU 用戶剔咗都用唔到，所以鎖住
+                        const disabled = m.key === "bank" && u.role === "bu_user";
+                        return (
+                          <button
+                            key={m.key}
+                            disabled={disabled}
+                            title={disabled ? "Bank 只限 Owner/Admin" : (on ? `撳一下移除 ${m.label}` : `撳一下開通 ${m.label}`)}
+                            onClick={() => updateUserMutation.mutate({
+                              user_id: u.user_id,
+                              patch: { modules: toggleScope(mods, m.key) },
+                            })}
+                            className={`text-[11px] px-2 py-0.5 rounded border ${
+                              disabled
+                                ? "opacity-40 cursor-not-allowed bg-transparent border-border text-muted-foreground"
+                                : on
+                                  ? "bg-emerald-500/10 border-emerald-500/40 text-emerald-700 dark:text-emerald-400"
+                                  : "bg-transparent border-border text-muted-foreground hover:bg-muted"
+                            }`}
+                            data-testid={`module-${m.key}-${u.user_id}`}
+                          >
+                            {m.label}
+                          </button>
+                        );
+                      })}
+                    </div>
                   </td>
                   <td className="py-2 text-muted-foreground text-xs">{new Date(u.created_at).toLocaleDateString()}</td>
                 </tr>

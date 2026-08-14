@@ -50,7 +50,7 @@ function Logo() {
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
   const { theme, toggleTheme } = useTheme();
-  const { profile, signOut, isSuperUser, isOwner } = useAuth();
+  const { profile, signOut, isSuperUser, isOwner, hasModule } = useAuth();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   return (
@@ -78,7 +78,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         </div>
 
         <nav className="flex-1 px-3 py-3 overflow-y-auto">
-          {/* Credit Card Module */}
+          {/* Credit Card Module — Settings -> Users 可用模組控制顯示 */}
+          {hasModule("card") && (
           <div className="mb-1">
             <div className="px-3 py-1.5 text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider">Credit Card</div>
             <div className="space-y-0.5">
@@ -107,7 +108,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             </div>
           </div>
 
+          )}
+
           {/* Bank Module */}
+          {hasModule("bank") && (
           <div className="mb-1">
             <div className="px-3 py-1.5 text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider">Bank</div>
             <div className="space-y-0.5">
@@ -136,7 +140,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             </div>
           </div>
 
+          )}
+
           {/* Claim Forms Module */}
+          {hasModule("claims") && (
           <div className="mb-1">
             <div className="px-3 py-1.5 text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider">Claims</div>
             <div className="space-y-0.5">
@@ -164,6 +171,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               })}
             </div>
           </div>
+
+          )}
 
           {/* Settings */}
           <div className="mt-2 pt-2 border-t border-sidebar-border/50">

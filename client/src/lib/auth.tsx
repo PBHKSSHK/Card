@@ -5,6 +5,9 @@ import type { Session, User } from "@supabase/supabase-js";
 
 export type UserRole = "owner" | "admin" | "bu_user";
 
+export type AppModule = "card" | "bank" | "claims";
+export const ALL_MODULES: AppModule[] = ["card", "bank", "claims"];
+
 export interface UserProfile {
   user_id: string;
   email: string;
@@ -12,6 +15,8 @@ export interface UserProfile {
   role: UserRole;
   // BU user 的 entity_code list；owner / admin 為空陣列 = 全部
   entity_scope: string[];
+  // 可用模組 (Settings -> Users 剔選)；預設全部
+  modules: AppModule[];
 }
 
 interface AuthContextType {
@@ -26,6 +31,8 @@ interface AuthContextType {
   isBuUser: boolean;
   // 取得當前 user 嘅 entity scope (super 用戶 return ["__ALL__"])
   entityScope: string[];
+  // 模組使用權 (card / bank / claims)
+  hasModule: (m: AppModule) => boolean;
   loading: boolean;
   signIn: (email: string, password: string) => Promise<{ error: string | null }>;
   signUp: (email: string, password: string, displayName: string) => Promise<{ error: string | null }>;
@@ -44,7 +51,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const fetchProfile = async (userId: string) => {
     const { data, error } = await supabase
       .from("user_profiles")
-      .select("user_id, email, full_name, role, entity_scope")
+      .select("user_id, email, full_name, role, entity_scope, modules")
       .eq("user_id", userId)
       .maybeSingle();
     if (error) {
@@ -59,6 +66,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         full_name: data.full_name,
         role: (data.role as UserRole) || "bu_user",
         entity_scope: Array.isArray(data.entity_scope) ? data.entity_scope : [],
+        // 欄未有 / null → 預設全部模組（同 DB default 一致）
+        modules: Array.isArray((data as any).modules) && (data as any).modules.length >= 0
+          ? ((data as any).modules as AppModule[])
+          : [...ALL_MODULES],
       });
     } else {
       // 未有 profile (trigger 未跑 / 新 user) — set null, UI 會 prompt
@@ -133,6 +144,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const isAdmin = profile?.role === "admin";
   const isSuperUser = isOwner || isAdmin;
   const isBuUser = profile?.role === "bu_user";
+  // Profile 未載入時當全部有 — 各頁面本身有自己嘅 route 守衛，唔會靠呢度做保安。
+  const hasModule = (m: AppModule) => (profile ? profile.modules.includes(m) : true);
 
   return (
     <AuthContext.Provider
@@ -145,6 +158,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isSuperUser,
         isBuUser,
         entityScope: profile?.entity_scope ?? [],
+        hasModule,
         loading,
         signIn,
         signUp,

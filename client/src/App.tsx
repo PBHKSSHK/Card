@@ -27,14 +27,28 @@ import LoginPage from "@/pages/LoginPage";
 import NotFound from "@/pages/not-found";
 import { Loader2 } from "lucide-react";
 
-function SuperOnly({ component: C }: { component: React.ComponentType }) {
-  const { isSuperUser, loading } = useAuth();
+// Route 守衛：superOnly = 只限 owner/admin；module = 需要該模組使用權
+// (Settings -> Users 可用模組剔選)。兩個可以同時要求。
+function Gate({ component: C, superOnly, module }: {
+  component: React.ComponentType;
+  superOnly?: boolean;
+  module?: "card" | "bank" | "claims";
+}) {
+  const { isSuperUser, hasModule, loading } = useAuth();
   if (loading) return null;
-  if (!isSuperUser) {
+  if (superOnly && !isSuperUser) {
     return (
       <div className="p-12 text-center text-muted-foreground">
         <p className="text-lg font-medium">該頁面只有 Owner / Admin 可以訪問</p>
         <p className="text-sm mt-2">如需權限請聯繫 admin</p>
+      </div>
+    );
+  }
+  if (module && !hasModule(module)) {
+    return (
+      <div className="p-12 text-center text-muted-foreground">
+        <p className="text-lg font-medium">你冇呢個模組嘅使用權限</p>
+        <p className="text-sm mt-2">如需開通請聯繫 admin（Settings → Users → 可用模組）</p>
       </div>
     );
   }
@@ -46,21 +60,23 @@ function AppRouter() {
     <AppLayout>
       <Switch>
         <Route path="/" component={Dashboard} />
-        <Route path="/upload" component={UploadCentre} />
-        <Route path="/recon" component={ReconQueue} />
-        <Route path="/exceptions" component={Exceptions} />
+        {/* Credit card 模組 */}
+        <Route path="/upload">{() => <Gate module="card" component={UploadCentre} />}</Route>
+        <Route path="/recon">{() => <Gate module="card" component={ReconQueue} />}</Route>
+        <Route path="/exceptions">{() => <Gate module="card" component={Exceptions} />}</Route>
         {/* CSV export 同 Journal 設定 — 只有 owner/admin */}
-        <Route path="/export">{() => <SuperOnly component={JournalExport} />}</Route>
-        <Route path="/bundle">{() => <SuperOnly component={BundleDownload} />}</Route>
-        <Route path="/report" component={BuReport} />
-        <Route path="/bank-recon">{() => <SuperOnly component={BankRecon} />}</Route>
-        {/* Claim Forms */}
-        <Route path="/claims/inbox" component={ApprovalInboxPage} />
-        <Route path="/claims/export">{() => <SuperOnly component={ClaimJournalExport} />}</Route>
-        <Route path="/claims" component={ClaimsPage} />
-        <Route path="/claims/new/:type" component={NewClaimPage} />
-        <Route path="/claims/:id/edit" component={NewClaimPage} />
-        <Route path="/claims/:id" component={ClaimDetailPage} />
+        <Route path="/export">{() => <Gate module="card" superOnly component={JournalExport} />}</Route>
+        <Route path="/bundle">{() => <Gate module="card" superOnly component={BundleDownload} />}</Route>
+        <Route path="/report">{() => <Gate module="card" component={BuReport} />}</Route>
+        {/* Bank 模組 (owner/admin only) */}
+        <Route path="/bank-recon">{() => <Gate module="bank" superOnly component={BankRecon} />}</Route>
+        {/* Claims 模組 */}
+        <Route path="/claims/inbox">{() => <Gate module="claims" component={ApprovalInboxPage} />}</Route>
+        <Route path="/claims/export">{() => <Gate module="claims" superOnly component={ClaimJournalExport} />}</Route>
+        <Route path="/claims">{() => <Gate module="claims" component={ClaimsPage} />}</Route>
+        <Route path="/claims/new/:type">{() => <Gate module="claims" component={NewClaimPage} />}</Route>
+        <Route path="/claims/:id/edit">{() => <Gate module="claims" component={NewClaimPage} />}</Route>
+        <Route path="/claims/:id">{() => <Gate module="claims" component={ClaimDetailPage} />}</Route>
         <Route path="/settings" component={SettingsPage} />
         <Route component={NotFound} />
       </Switch>
