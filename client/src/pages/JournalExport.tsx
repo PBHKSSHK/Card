@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Download, ChevronDown, ChevronRight, AlertCircle, Package } from "lucide-react";
+import { Download, ChevronDown, ChevronRight, AlertCircle, Package, Loader2, CloudUpload } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { csvText, csvAmount } from "@/lib/csv";
 import { round2, sum2 } from "@/lib/money";
@@ -157,6 +157,7 @@ interface IcNeed {
 export default function JournalExport() {
   const [selectedPeriod, setSelectedPeriod] = useState<string>("all");
   const [selectedCard, setSelectedCard] = useState<string>("all"); // card_last4 filter for preview + Export CSV
+  const [isPosting, setIsPosting] = useState(false);
   const [expandedCards, setExpandedCards] = useState<Set<string>>(new Set());
   const [showUnmappedList, setShowUnmappedList] = useState(false);
   const [highlightedKey, setHighlightedKey] = useState<string | null>(null);
@@ -1105,6 +1106,58 @@ export default function JournalExport() {
     toast({ title: "Export complete", description: `${journalEntries.length} lines exported` });
   };
 
+  // ===== Post the currently-filtered journal straight to NetSuite =====
+  // Same entries as the CSV, posted as UNAPPROVED drafts (a human approves in
+  // NetSuite before they hit the ledger). externalId per (card, month[, IC])
+  // makes re-posting safe — duplicates are reported, not re-created.
+  const handlePostToNetSuite = async () => {
+    if (journalEntries.length === 0 || isPosting) return;
+    const entryCount = new Set(journalEntries.map((e) => e.entry_no)).size;
+    const issueCount = journalEntries.filter((e) => e.warning || !e.account || e.account === "UNMAPPED").length;
+    const warn = issueCount > 0 ? `\n\n⚠ 有 ${issueCount} 條 line 有 mapping/FX 問題 — 呢啲 entry 會被跳過並報錯。` : "";
+    if (!window.confirm(
+      `將以目前篩選（${selectedPeriod === "all" ? "所有月份" : selectedPeriod} · ${selectedCard === "all" ? "所有卡" : "····" + selectedCard}）` +
+      `post ${entryCount} 張 JE 上 NetSuite（unapproved draft，NetSuite 入面 approve 先入賬）。${warn}\n\n繼續？`
+    )) return;
+
+    setIsPosting(true);
+    try {
+      const payload = journalEntries.map((e) => ({
+        entry_no: e.entry_no,
+        date: e.date,
+        account: e.account,
+        currency: e.currency,
+        debit: e.debit,
+        credit: e.credit,
+        memo: e.memo,
+        subsidiary: e.subsidiary,
+        department: e.department,
+        class_project: e.class_project,
+        name: e.name,
+        cardholder: e.cardholder,
+      }));
+      const { data, error } = await supabase.functions.invoke("netsuite-post-card-journal", {
+        body: { entries: payload },
+      });
+      if (error) throw new Error(error.message || String(error));
+      const res = data as { created: number; duplicates: number; failed: number; results: any[] };
+      const errs = (res.results || []).filter((r) => r.status === "error");
+      if (errs.length > 0) console.warn("[NetSuite post] errors:", errs);
+      toast({
+        title: res.failed > 0 ? "部分完成" : "已 post 上 NetSuite",
+        description: `新建 ${res.created} 張` +
+          (res.duplicates ? ` · ${res.duplicates} 張之前已 post（跳過）` : "") +
+          (res.failed ? ` · ${res.failed} 張失敗：${errs[0]?.error?.slice(0, 160) || ""}` : "") +
+          (res.created ? " — 請入 NetSuite approve。" : ""),
+        variant: res.failed > 0 ? "destructive" : undefined,
+      });
+    } catch (e: any) {
+      toast({ title: "Post 失敗", description: String(e?.message || e).slice(0, 300), variant: "destructive" });
+    } finally {
+      setIsPosting(false);
+    }
+  };
+
   // ===== Bulk export by statement month (zip) =====
   // 使用 statement_date 取 YYYY-MM 作 key。沒 statement_date 反回 txn_date。
   const handleBulkExportByMonth = async () => {
@@ -1241,6 +1294,11 @@ export default function JournalExport() {
           </Select>
           <Button onClick={handleExport} disabled={journalEntries.length === 0}>
             <Download size={16} className="mr-2" /> Export CSV
+          </Button>
+          <Button onClick={handlePostToNetSuite} disabled={journalEntries.length === 0 || isPosting}
+            variant="secondary" title="將目前篩選嘅 journal 直接 post 上 NetSuite 做 unapproved draft" data-testid="button-post-netsuite">
+            {isPosting ? <Loader2 size={16} className="mr-2 animate-spin" /> : <CloudUpload size={16} className="mr-2" />}
+            Post to NetSuite
           </Button>
           <Button onClick={handleBulkExportByMonth} disabled={transactions.length === 0} variant="outline" title="以 statement 月份分開打包 zip">
             <Package size={16} className="mr-2" /> Bulk by Month (zip)
