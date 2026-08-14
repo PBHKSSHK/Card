@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Landmark, Loader2, Play, Search } from "lucide-react";
+import { Landmark, Loader2, Play, RefreshCw, Search } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import type { BankTransaction, NsGlEntry, BankReconResult } from "@shared/schema";
 
@@ -262,6 +262,7 @@ export default function BankRecon() {
   const [period, setPeriod] = useState("all");
   const [view, setView] = useState<"todo" | "done">("todo");
   const [running, setRunning] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [page, setPage] = useState(0);
   const PER_PAGE = 15;
   const { toast } = useToast();
@@ -442,6 +443,28 @@ export default function BankRecon() {
     },
   });
 
+  // Pull the latest bank-account GL lines from NetSuite into ns_gl_entries
+  // (server-side dedupe on ns_line_key — re-runs only add new lines).
+  const handleSyncNetSuite = async () => {
+    setSyncing(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("netsuite-sync-gl", {
+        body: { months: 3 },
+      });
+      if (error) throw new Error(error.message || "Edge Function 呼叫失敗");
+      if (data?.error) throw new Error(data.error);
+      toast({
+        title: "NetSuite 同步完成",
+        description: `由 ${data.since} 起共 ${data.fetched} 行，新增 ${data.inserted} 行`,
+      });
+      qc.invalidateQueries({ queryKey: ["gl-pool"] });
+      qc.invalidateQueries({ queryKey: ["bank-recon-results"] });
+    } catch (err: any) {
+      toast({ title: "同步失敗", description: err.message, variant: "destructive" });
+    }
+    setSyncing(false);
+  };
+
   const handleRunMatching = async () => {
     setRunning(true);
     try {
@@ -468,10 +491,16 @@ export default function BankRecon() {
           </h1>
           <p className="text-sm text-muted-foreground">左邊係銀行月結單 → 右邊揀 NetSuite 紀錄配對，或者 Create 人手歸類</p>
         </div>
-        <Button onClick={handleRunMatching} disabled={running} data-testid="button-run-bank-matching">
-          {running ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Play className="h-4 w-4 mr-2" />}
-          自動配對
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={handleSyncNetSuite} disabled={syncing} data-testid="button-sync-netsuite">
+            {syncing ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-2" />}
+            同步 NetSuite
+          </Button>
+          <Button onClick={handleRunMatching} disabled={running} data-testid="button-run-bank-matching">
+            {running ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Play className="h-4 w-4 mr-2" />}
+            自動配對
+          </Button>
+        </div>
       </div>
 
       {/* Filters + view toggle */}
