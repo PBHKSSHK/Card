@@ -152,31 +152,47 @@ Deno.serve(async (req) => {
       groups.get(e.entry_no)!.push(e);
     }
 
-    // ---- resolve Project (job) + Customer/Vendor ids via SuiteQL ----
+    // ---- resolve Project (job) + Customer/Vendor internal ids ----
     // In this NetSuite account the P-codes are JOB (Project) records, not
     // Classes — a JE line books to a project via its entity (Name) field.
+    // The TBA token's role CANNOT see job/vendor records via SuiteQL (returns
+    // 0 rows silently), so ids come from our mirrors (ns_project_codes /
+    // ns_entity_ids, backfilled from NetSuite); SuiteQL stays as a fallback
+    // for anything not mirrored yet.
     const projectIds = [...new Set(entries.map((e) => (e.class_project || '').trim()).filter(Boolean))];
     const entityCodes = [...new Set(entries.map((e) => (e.name || '').trim()).filter(Boolean))];
     const jobId = new Map<string, string>();
-    const entityRef = new Map<string, { id: string; kind: 'customer' | 'vendor' }>();
+    const entityRef = new Map<string, { id: string }>();
     if (projectIds.length > 0) {
-      const inList = projectIds.map((c) => `'${c.replace(/'/g, "''")}'`).join(',');
-      for (const r of await suiteql(`SELECT id, entityid FROM job WHERE entityid IN (${inList})`)) {
-        jobId.set(String(r.entityid), String(r.id));
+      const { data: projRows } = await svc.from('ns_project_codes')
+        .select('project_id, internal_id').in('project_id', projectIds).not('internal_id', 'is', null);
+      for (const r of projRows || []) jobId.set(String(r.project_id), String(r.internal_id));
+      const missing = projectIds.filter((p) => !jobId.has(p));
+      if (missing.length > 0) {
+        const inList = missing.map((c) => `'${c.replace(/'/g, "''")}'`).join(',');
+        for (const r of await suiteql(`SELECT id, entityid FROM job WHERE entityid IN (${inList})`)) {
+          jobId.set(String(r.entityid), String(r.id));
+        }
       }
     }
-    const custCodes = entityCodes.filter((c) => /^C/i.test(c));
-    const vendCodes = entityCodes.filter((c) => /^V/i.test(c));
-    if (custCodes.length > 0) {
-      const inList = custCodes.map((c) => `'${c.replace(/'/g, "''")}'`).join(',');
-      for (const r of await suiteql(`SELECT id, entityid FROM customer WHERE entityid IN (${inList})`)) {
-        entityRef.set(String(r.entityid), { id: String(r.id), kind: 'customer' });
+    if (entityCodes.length > 0) {
+      const { data: entRows } = await svc.from('ns_entity_ids')
+        .select('entityid, internal_id').in('entityid', entityCodes);
+      for (const r of entRows || []) entityRef.set(String(r.entityid), { id: String(r.internal_id) });
+      const missing = entityCodes.filter((c) => !entityRef.has(c));
+      const missCust = missing.filter((c) => /^C/i.test(c));
+      const missVend = missing.filter((c) => /^V/i.test(c));
+      if (missCust.length > 0) {
+        const inList = missCust.map((c) => `'${c.replace(/'/g, "''")}'`).join(',');
+        for (const r of await suiteql(`SELECT id, entityid FROM customer WHERE entityid IN (${inList})`)) {
+          entityRef.set(String(r.entityid), { id: String(r.id) });
+        }
       }
-    }
-    if (vendCodes.length > 0) {
-      const inList = vendCodes.map((c) => `'${c.replace(/'/g, "''")}'`).join(',');
-      for (const r of await suiteql(`SELECT id, entityid FROM vendor WHERE entityid IN (${inList})`)) {
-        entityRef.set(String(r.entityid), { id: String(r.id), kind: 'vendor' });
+      if (missVend.length > 0) {
+        const inList = missVend.map((c) => `'${c.replace(/'/g, "''")}'`).join(',');
+        for (const r of await suiteql(`SELECT id, entityid FROM vendor WHERE entityid IN (${inList})`)) {
+          entityRef.set(String(r.entityid), { id: String(r.id) });
+        }
       }
     }
 
