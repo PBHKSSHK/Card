@@ -852,7 +852,7 @@ export default function NewClaimPage() {
   return (
     <div className="space-y-4 max-w-6xl">
       <div className="flex items-center gap-3">
-        <Button variant="ghost" size="sm" onClick={() => setLocation(isEdit ? `/claims/${editId}` : "/claims")} data-testid="button-back">
+        <Button variant="ghost" size="sm" onClick={() => setLocation(isEdit ? `/claims/${editId}` : (claimType === "payment" ? "/payments" : "/claims"))} data-testid="button-back">
           <ArrowLeft size={16} className="mr-1" /> 返回
         </Button>
         <div className="flex items-center gap-2">

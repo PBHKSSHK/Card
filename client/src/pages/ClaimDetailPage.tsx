@@ -626,7 +626,7 @@ export default function ClaimDetailPage() {
     <div className="space-y-4 max-w-6xl">
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-3">
-          <Button variant="ghost" size="sm" onClick={() => setLocation("/claims")} data-testid="button-back">
+          <Button variant="ghost" size="sm" onClick={() => setLocation(claimType === "payment" ? "/payments" : "/claims")} data-testid="button-back">
             <ArrowLeft size={16} className="mr-1" /> 返回
           </Button>
           <div className="flex items-center gap-2">
@@ -987,13 +987,13 @@ export default function ClaimDetailPage() {
               <XCircle size={14} className="mr-1" /> 退回
             </Button>
           )}
-          {/* Export */}
-          {canExport && (
+          {/* Export — 付款申請唔出 journal CSV，係喺付款申請面板直接入 NetSuite Bills */}
+          {canExport && claimType !== "payment" && (
             <Button onClick={exportJournalCsv} disabled={processing} data-testid="button-export">
               <FileDown size={14} className="mr-1" /> 匯出 Journal CSV
             </Button>
           )}
-          {status === "exported" && isSuperUser && (
+          {status === "exported" && isSuperUser && claimType !== "payment" && (
             <Button variant="outline" onClick={exportJournalCsv} data-testid="button-re-export">
               <FileDown size={14} className="mr-1" /> 重新下載 CSV
             </Button>

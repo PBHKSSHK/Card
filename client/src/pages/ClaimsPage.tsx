@@ -17,7 +17,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Receipt, Car, Plus, Filter, Calendar, User, CheckCircle2,
-  Clock, XCircle, FileCheck, Send, Eye, HandCoins,
+  Clock, XCircle, FileCheck, Send, Eye,
 } from "lucide-react";
 
 const STATUS_LABELS: Record<string, { label: string; color: string; icon: any }> = {
@@ -61,9 +61,11 @@ export default function ClaimsPage() {
   const { data: claims, isLoading } = useQuery({
     queryKey: ["claim-batches"],
     queryFn: async () => {
+      // 付款申請有自己嘅面板 (/payments) — 呢度只顯示日常駛費 + 交通費
       const { data, error } = await supabase
         .from("claim_batches")
         .select("*")
+        .neq("claim_type", "payment")
         .order("created_at", { ascending: false });
       if (error) throw error;
       return (data || []) as ClaimBatch[];
@@ -110,15 +112,9 @@ export default function ClaimsPage() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Claim Forms</h1>
-          <p className="text-sm text-muted-foreground mt-1">日常駛費 + 交通費用申報 + 付款申請</p>
+          <p className="text-sm text-muted-foreground mt-1">日常駛費 + 交通費用申報</p>
         </div>
         <div className="flex items-center gap-2">
-          <Link href="/claims/new/payment">
-            <Button variant="outline" data-testid="button-new-payment">
-              <HandCoins size={16} className="mr-2" />
-              新增 付款申請
-            </Button>
-          </Link>
           <Link href="/claims/new/transportation">
             <Button variant="outline" data-testid="button-new-transport">
               <Car size={16} className="mr-2" />
@@ -173,7 +169,6 @@ export default function ClaimsPage() {
               <SelectItem value="all">全部類型</SelectItem>
               <SelectItem value="expenses">日常駛費</SelectItem>
               <SelectItem value="transportation">交通費用</SelectItem>
-              <SelectItem value="payment">付款申請</SelectItem>
             </SelectContent>
           </Select>
           <Select value={filterStatus} onValueChange={setFilterStatus}>
@@ -235,10 +230,6 @@ export default function ClaimsPage() {
                           <span className="inline-flex items-center gap-1.5 text-xs">
                             <Receipt size={14} className="text-primary" /> 日常駛費
                           </span>
-                        ) : c.claim_type === "payment" ? (
-                          <span className="inline-flex items-center gap-1.5 text-xs">
-                            <HandCoins size={14} className="text-primary" /> 付款申請
-                          </span>
                         ) : (
                           <span className="inline-flex items-center gap-1.5 text-xs">
                             <Car size={14} className="text-primary" /> 交通費
@@ -247,9 +238,6 @@ export default function ClaimsPage() {
                       </td>
                       <td className="px-3 py-3 text-sm">
                         <div>{c.nick_name || c.full_name || "—"}</div>
-                        {c.claim_type === "payment" && c.payee_name && (
-                          <div className="text-xs text-muted-foreground">→ {c.payee_name}</div>
-                        )}
                         {c.department && <div className="text-xs text-muted-foreground">{c.department}</div>}
                       </td>
                       <td className="px-3 py-3 text-xs">

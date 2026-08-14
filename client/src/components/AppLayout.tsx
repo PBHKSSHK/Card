@@ -4,7 +4,7 @@ import { useAuth } from "@/lib/auth";
 import {
   LayoutDashboard, Upload, GitCompareArrows, AlertTriangle, Package,
   FileDown, BarChart3, Settings, Sun, Moon, CreditCard, Menu, LogOut, User, Landmark,
-  Receipt, Inbox,
+  Receipt, Inbox, HandCoins,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
@@ -28,6 +28,7 @@ const bankNavItems = [
 const claimNavItems = [
   { href: "/claims/inbox", label: "審批 Inbox", icon: Inbox, superOnly: false },
   { href: "/claims", label: "Claim Forms", icon: Receipt, superOnly: false },
+  { href: "/payments", label: "付款申請", icon: HandCoins, superOnly: false },
   { href: "/claims/export", label: "Claim Journal Export", icon: FileDown, superOnly: true },
 ];
 

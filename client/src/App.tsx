@@ -19,6 +19,7 @@ import BuReport from "@/pages/BuReport";
 import BankRecon from "@/pages/BankRecon";
 import BankUploadCentre from "@/pages/BankUploadCentre";
 import ClaimsPage from "@/pages/ClaimsPage";
+import PaymentsPage from "@/pages/PaymentsPage";
 import NewClaimPage from "@/pages/NewClaimPage";
 import ClaimDetailPage from "@/pages/ClaimDetailPage";
 import ApprovalInboxPage from "@/pages/ApprovalInboxPage";
@@ -73,6 +74,7 @@ function AppRouter() {
         <Route path="/bank-upload">{() => <Gate module="bank" superOnly component={BankUploadCentre} />}</Route>
         <Route path="/bank-recon">{() => <Gate module="bank" superOnly component={BankRecon} />}</Route>
         {/* Claims 模組 */}
+        <Route path="/payments">{() => <Gate module="claims" component={PaymentsPage} />}</Route>
         <Route path="/claims/inbox">{() => <Gate module="claims" component={ApprovalInboxPage} />}</Route>
         <Route path="/claims/export">{() => <Gate module="claims" superOnly component={ClaimJournalExport} />}</Route>
         <Route path="/claims">{() => <Gate module="claims" component={ClaimsPage} />}</Route>
