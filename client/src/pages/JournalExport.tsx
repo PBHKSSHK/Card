@@ -157,6 +157,7 @@ interface IcNeed {
 export default function JournalExport() {
   const [selectedPeriod, setSelectedPeriod] = useState<string>("all");
   const [selectedCard, setSelectedCard] = useState<string>("all"); // card_last4 filter for preview + Export CSV
+  const [selectedSubsidiary, setSelectedSubsidiary] = useState<string>("all"); // entry-level subsidiary filter
   const [isPosting, setIsPosting] = useState(false);
   const [expandedCards, setExpandedCards] = useState<Set<string>>(new Set());
   const [showUnmappedList, setShowUnmappedList] = useState(false);
@@ -947,10 +948,24 @@ export default function JournalExport() {
   }
 
   // Main preview / single-CSV entries — the selected period (or all) via the shared path.
-  const journalEntries = useMemo(
+  const allBuiltEntries = useMemo(
     () => buildEntriesForTxns(filtered),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [filtered, ccAccounts, linesByTxn, entityToSubsidiary, entityToDefaultChargeTo, chargeToSubsidiary, chargeToDeptName, accountFullNameMap, icByEntity, nsDepartments, employeeByCode]
+  );
+
+  // Subsidiary filter operates on whole ENTRIES (every line of an entry_no
+  // shares one subsidiary, and each entry balances on its own) — so CSV export
+  // and Post-to-NetSuite of a single company stay balanced.
+  const subsidiaryOptions = useMemo(
+    () => Array.from(new Set(allBuiltEntries.map((e) => e.subsidiary || "UNMAPPED"))).sort(),
+    [allBuiltEntries]
+  );
+  const journalEntries = useMemo(
+    () => selectedSubsidiary === "all"
+      ? allBuiltEntries
+      : allBuiltEntries.filter((e) => (e.subsidiary || "UNMAPPED") === selectedSubsidiary),
+    [allBuiltEntries, selectedSubsidiary]
   );
 
   // Group entries by cardholder for display
@@ -1100,7 +1115,8 @@ export default function JournalExport() {
     a.href = url;
     const period = selectedPeriod === "all" ? "all" : selectedPeriod;
     const cardTag = selectedCard === "all" ? "" : `_card${selectedCard}`;
-    a.download = `netsuite_journal_${period}${cardTag}_${new Date().toISOString().split("T")[0]}.csv`;
+    const subTag = selectedSubsidiary === "all" ? "" : `_${selectedSubsidiary.split(":").pop()!.trim().replace(/[^A-Za-z0-9]+/g, "-").slice(0, 30)}`;
+    a.download = `netsuite_journal_${period}${cardTag}${subTag}_${new Date().toISOString().split("T")[0]}.csv`;
     a.click();
     URL.revokeObjectURL(url);
     toast({ title: "Export complete", description: `${journalEntries.length} lines exported` });
@@ -1116,7 +1132,8 @@ export default function JournalExport() {
     const issueCount = journalEntries.filter((e) => e.warning || !e.account || e.account === "UNMAPPED").length;
     const warn = issueCount > 0 ? `\n\n⚠ 有 ${issueCount} 條 line 有 mapping/FX 問題 — 呢啲 entry 會被跳過並報錯。` : "";
     if (!window.confirm(
-      `將以目前篩選（${selectedPeriod === "all" ? "所有月份" : selectedPeriod} · ${selectedCard === "all" ? "所有卡" : "····" + selectedCard}）` +
+      `將以目前篩選（${selectedPeriod === "all" ? "所有月份" : selectedPeriod} · ${selectedCard === "all" ? "所有卡" : "····" + selectedCard}` +
+      ` · ${selectedSubsidiary === "all" ? "所有公司" : selectedSubsidiary}）` +
       `post ${entryCount} 張 JE 上 NetSuite（unapproved draft，NetSuite 入面 approve 先入賬）。${warn}\n\n繼續？`
     )) return;
 
@@ -1289,6 +1306,17 @@ export default function JournalExport() {
               <SelectItem value="all">All credit cards</SelectItem>
               {cardOptions.map((c) => (
                 <SelectItem key={c.last4} value={c.last4}>{c.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={selectedSubsidiary} onValueChange={setSelectedSubsidiary}>
+            <SelectTrigger className="w-56" title="揀一間公司（subsidiary）淨係 export / post 佢嘅 JE — 每張 JE 獨立平衡，唔會拆散" data-testid="select-export-subsidiary">
+              <SelectValue placeholder="Subsidiary" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All subsidiaries</SelectItem>
+              {subsidiaryOptions.map((s) => (
+                <SelectItem key={s} value={s}>{s}</SelectItem>
               ))}
             </SelectContent>
           </Select>
