@@ -81,7 +81,8 @@ function AppRouter() {
         <Route path="/claims/new/:type">{() => <Gate module="claims" component={NewClaimPage} />}</Route>
         <Route path="/claims/:id/edit">{() => <Gate module="claims" component={NewClaimPage} />}</Route>
         <Route path="/claims/:id">{() => <Gate module="claims" component={ClaimDetailPage} />}</Route>
-        <Route path="/settings" component={SettingsPage} />
+        {/* Settings — 只限 Owner/Admin (BU user 唔可以睇) */}
+        <Route path="/settings">{() => <Gate superOnly component={SettingsPage} />}</Route>
         <Route component={NotFound} />
       </Switch>
     </AppLayout>

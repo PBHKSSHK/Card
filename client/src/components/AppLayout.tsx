@@ -176,7 +176,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
           )}
 
-          {/* Settings */}
+          {/* Settings — 只限 Owner/Admin (BU user 唔顯示) */}
+          {isSuperUser && (
           <div className="mt-2 pt-2 border-t border-sidebar-border/50">
             <div className="space-y-0.5">
               {settingsNavItems.map((item) => {
@@ -203,6 +204,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               })}
             </div>
           </div>
+          )}
         </nav>
 
         {/* User info + actions */}
