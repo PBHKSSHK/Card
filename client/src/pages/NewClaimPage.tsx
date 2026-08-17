@@ -103,8 +103,27 @@ function genKey() {
   return Math.random().toString(36).slice(2, 9);
 }
 
-function makeBlankLine(itemNo: number, type: ClaimType): LineForm {
-  const today = todayHK();  // HK-local date (fix #4)
+// Period (YYYY-MM) → 該月第一日 / 最後一日 (明細日期只可以喺 Period 月份內揀)
+function monthBounds(period: string | undefined): { min: string; max: string } | null {
+  const m = (period || "").match(/^(\d{4})-(\d{2})$/);
+  if (!m) return null;
+  const lastDay = new Date(Number(m[1]), Number(m[2]), 0).getDate();
+  return { min: `${period}-01`, max: `${period}-${String(lastDay).padStart(2, "0")}` };
+}
+
+// 將日期 clamp 入 period 月份：保留日子，超出月尾就用月尾
+function clampToPeriod(date: string, period: string): string {
+  const b = monthBounds(period);
+  if (!b || !date) return date;
+  if (date >= b.min && date <= b.max) return date;
+  const day = date.slice(8, 10);
+  if (!/^\d{2}$/.test(day)) return b.min;
+  return `${period}-${day}` > b.max ? b.max : `${period}-${day}`;
+}
+
+function makeBlankLine(itemNo: number, type: ClaimType, period?: string): LineForm {
+  // 預設日期 = 今日，但唔可以出 Period 月份 (fix #4: HK-local)
+  const today = period ? clampToPeriod(todayHK(), period) : todayHK();
   // payment (付款申請) 明細同 expenses 一樣：project / category / 幣別 / 金額
   if (type === "expenses" || type === "payment") {
     return {
@@ -503,8 +522,19 @@ export default function NewClaimPage() {
     }
   }
 
+  // Period 改咗 → 所有明細日期搬入新月份 (保留日子，超出月尾用月尾)
+  function handlePeriodChange(v: string) {
+    setPeriodMonth(v);
+    if (!monthBounds(v)) return;
+    setLines(prev => prev.map(l =>
+      l.line_date ? { ...l, line_date: clampToPeriod(l.line_date, v) } : l
+    ));
+  }
+
+  const periodBounds = monthBounds(periodMonth);
+
   function addLine() {
-    setLines(prev => [...prev, makeBlankLine(prev.length + 1, claimType)]);
+    setLines(prev => [...prev, makeBlankLine(prev.length + 1, claimType, periodMonth)]);
   }
 
   function removeLine(key: string) {
@@ -559,6 +589,19 @@ export default function NewClaimPage() {
       if (claimType === "payment" && !payeeName.trim()) {
         toast({ title: "缺少收款人", description: "付款申請必須填收款人 (supplier / freelancer 名稱)", variant: "destructive" });
         return;
+      }
+      // 明細日期一定要喺 Period 月份之內
+      if (periodBounds) {
+        const bad = lines.filter(l => l.hkd_amount && l.line_date &&
+          (l.line_date < periodBounds.min || l.line_date > periodBounds.max));
+        if (bad.length > 0) {
+          toast({
+            title: "明細日期唔喺 Period 之內",
+            description: `第 ${bad.map(l => l.item_no).join(", ")} 行嘅日期要喺 ${periodMonth} 月內`,
+            variant: "destructive",
+          });
+          return;
+        }
       }
     }
 
@@ -941,8 +984,8 @@ export default function NewClaimPage() {
             )}
           </div>
           <div>
-            <Label className="text-xs">Period (Month)</Label>
-            <Input type="month" value={periodMonth} onChange={(e) => setPeriodMonth(e.target.value)} data-testid="input-period" />
+            <Label className="text-xs">Period (Month) <span className="text-muted-foreground">(明細日期只可以喺呢個月內)</span></Label>
+            <Input type="month" value={periodMonth} onChange={(e) => handlePeriodChange(e.target.value)} data-testid="input-period" />
           </div>
           <div>
             <Label className="text-xs">Submit Date</Label>
@@ -1057,7 +1100,17 @@ export default function NewClaimPage() {
               {lines.map((l) => (
                 <tr key={l._key} className="border-b border-border/40" data-testid={`row-line-${l.item_no}`}>
                   <td className="px-2 py-2 tabular-nums">{l.item_no}</td>
-                  <td className="px-2 py-2"><Input type="date" value={l.line_date} onChange={(e) => updateLine(l._key, { line_date: e.target.value })} className="h-7 text-xs" /></td>
+                  <td className="px-2 py-2"><Input type="date" value={l.line_date}
+                    min={periodBounds?.min} max={periodBounds?.max}
+                    onChange={(e) => updateLine(l._key, { line_date: e.target.value })}
+                    onBlur={(e) => {
+                      // date picker min/max 可以被手動打字繞過 — blur 時 clamp 返入 Period
+                      const v = e.target.value;
+                      if (v && periodBounds && (v < periodBounds.min || v > periodBounds.max)) {
+                        updateLine(l._key, { line_date: clampToPeriod(v, periodMonth) });
+                      }
+                    }}
+                    className="h-7 text-xs" /></td>
                   <td className="px-2 py-2">
                     <Select
                       value={l.project_code || "__none__"}
