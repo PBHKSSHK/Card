@@ -469,6 +469,13 @@ export default function NewClaimPage() {
     return expenseCategoriesRaw;
   }, [expenseCategoriesRaw, claimType]);
 
+  // 同 Upload Centre / Assign / Split 同一規則：
+  // 揀咗 Project → Category 只出 [Project] (account 7xxxx)；
+  // 冇揀 Project → 唔出 [Project] items。
+  const isProjectCat = (c: any) => String(c.ns_account_number || "").startsWith("7");
+  const categoriesForLine = (hasProject: boolean) =>
+    expenseCategories.filter((c: any) => (hasProject ? isProjectCat(c) : !isProjectCat(c)));
+
   // Derived totals
   const totalHkd = useMemo(() => {
     return lines.reduce((s, l) => s + (parseFloat(l.hkd_amount || "0") || 0), 0);
@@ -1114,7 +1121,19 @@ export default function NewClaimPage() {
                   <td className="px-2 py-2">
                     <Select
                       value={l.project_code || "__none__"}
-                      onValueChange={(v) => updateLine(l._key, { project_code: v === "__none__" ? "" : v })}
+                      onValueChange={(v) => {
+                        const project_code = v === "__none__" ? "" : v;
+                        const patch: Partial<LineForm> = { project_code };
+                        // category 同新 project 狀態唔夾就自動處理:
+                        // transport 轉返合適類別，expenses/payment 清走要重新揀
+                        const cat = expenseCategoriesRaw.find((c: any) => c.category_key === l.expense_category_code);
+                        if (cat && !!project_code !== isProjectCat(cat)) {
+                          patch.expense_category_code = claimType === "transportation"
+                            ? (project_code ? "project_travel" : "staff_transport")
+                            : "";
+                        }
+                        updateLine(l._key, patch);
+                      }}
                       disabled={!chargeToCode}
                     >
                       <SelectTrigger className="h-7 text-xs min-w-[140px]">
@@ -1162,7 +1181,7 @@ export default function NewClaimPage() {
                       <Select value={l.expense_category_code || "staff_transport"} onValueChange={(v) => updateLine(l._key, { expense_category_code: v })}>
                         <SelectTrigger className="h-7 text-xs min-w-[140px]"><SelectValue /></SelectTrigger>
                         <SelectContent>
-                          {expenseCategories.map((c: any) => (
+                          {categoriesForLine(!!l.project_code).map((c: any) => (
                             <SelectItem key={c.category_key} value={c.category_key}>
                               <span className="font-mono text-[10px] text-muted-foreground mr-1">{c.ns_account_number}</span>
                               {c.label_zh}
@@ -1183,10 +1202,12 @@ export default function NewClaimPage() {
                   {claimType !== "transportation" && <>
                     <td className="px-2 py-2">
                       <Select value={l.expense_category_code || "__none__"} onValueChange={(v) => updateLine(l._key, { expense_category_code: v === "__none__" ? "" : v })}>
-                        <SelectTrigger className="h-7 text-xs min-w-[160px]"><SelectValue placeholder="— 選費用類別 —" /></SelectTrigger>
+                        <SelectTrigger className="h-7 text-xs min-w-[160px]">
+                          <SelectValue placeholder={l.project_code ? "揀 [Project] 類別" : "— 選費用類別 —"} />
+                        </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="__none__">—</SelectItem>
-                          {expenseCategories.map((c: any) => (
+                          {categoriesForLine(!!l.project_code).map((c: any) => (
                             <SelectItem key={c.category_key} value={c.category_key}>
                               <span className="font-mono text-[10px] text-muted-foreground mr-1">{c.ns_account_number}</span>
                               {c.label_zh}
