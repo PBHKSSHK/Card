@@ -191,6 +191,7 @@ export default function NewClaimPage() {
   const [payeeType, setPayeeType] = useState(
     routeType === "payment_freelancer" ? "freelancer" : "supplier"
   );
+  const [payeeFocus, setPayeeFocus] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState("bank_transfer");
   const [payeeBank, setPayeeBank] = useState("");
   const [payeeBankAccount, setPayeeBankAccount] = useState("");
@@ -469,6 +470,41 @@ export default function NewClaimPage() {
     }
     return expenseCategoriesRaw;
   }, [expenseCategoriesRaw, claimType]);
+
+  // NetSuite vendor 名冊 (ns_vendor_directory 鏡射) — 收款人揀選來源。
+  // individual = 自由工作者，company = 供應商；表格類型只出對應嗰批。
+  const { data: nsVendors = [] } = useQuery({
+    queryKey: ["ns_vendor_directory", payeeType],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("ns_vendor_directory")
+        .select("internal_id, entityid, company_name, is_person")
+        .eq("is_inactive", false)
+        .eq("is_person", payeeType === "freelancer")
+        .order("company_name");
+      if (error) return [];
+      return data || [];
+    },
+    enabled: claimType === "payment",
+  });
+
+  const payeeMatches = useMemo(() => {
+    const q = payeeName.trim().toLowerCase();
+    if (!q) return nsVendors.slice(0, 8);
+    return nsVendors
+      .filter((v: any) =>
+        (v.company_name || "").toLowerCase().includes(q) ||
+        (v.entityid || "").toLowerCase().includes(q))
+      .slice(0, 8);
+  }, [nsVendors, payeeName]);
+
+  const payeeInNs = useMemo(() => {
+    const q = payeeName.trim().toLowerCase();
+    if (!q) return false;
+    return nsVendors.some((v: any) =>
+      (v.company_name || "").trim().toLowerCase() === q ||
+      (v.entityid || "").trim().toLowerCase() === q);
+  }, [nsVendors, payeeName]);
 
   // 同 Upload Centre / Assign / Split 同一規則：
   // 揀咗 Project → Category 只出 [Project] (account 7xxxx)；
@@ -1010,10 +1046,38 @@ export default function NewClaimPage() {
             <HandCoins size={15} /> 收款人資料 (Payee)
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <div>
+            <div className="relative">
               <Label className="text-xs">收款人名稱 *</Label>
-              <Input value={payeeName} onChange={(e) => setPayeeName(e.target.value)}
-                placeholder="Supplier / freelancer 名" data-testid="input-payee-name" />
+              <Input value={payeeName}
+                onChange={(e) => setPayeeName(e.target.value)}
+                onFocus={() => setPayeeFocus(true)}
+                onBlur={() => setTimeout(() => setPayeeFocus(false), 150)}
+                placeholder={payeeType === "freelancer" ? "搜尋 NetSuite 自由工作者，或輸入新名" : "搜尋 NetSuite 供應商，或輸入新名"}
+                autoComplete="off"
+                data-testid="input-payee-name" />
+              {payeeFocus && payeeMatches.length > 0 && (
+                <div className="absolute z-30 mt-1 w-full max-h-56 overflow-y-auto rounded-md border border-border bg-popover shadow-md">
+                  {payeeMatches.map((v: any) => (
+                    <button type="button" key={v.internal_id}
+                      className="w-full text-left px-2 py-1.5 text-xs hover:bg-muted"
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        setPayeeName(v.company_name || v.entityid || "");
+                        setPayeeFocus(false);
+                      }}>
+                      <span className="font-mono text-[10px] text-muted-foreground mr-1.5">{v.entityid}</span>
+                      {v.company_name}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {payeeName.trim() && (payeeInNs ? (
+                <div className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-0.5">✓ NetSuite 已有呢個收款人</div>
+              ) : (
+                <div className="text-[10px] text-amber-600 dark:text-amber-500 mt-0.5">
+                  新收款人 — NetSuite 未有，批核後入 Bills 前要先喺 NetSuite 開 vendor
+                </div>
+              ))}
             </div>
             <div>
               <Label className="text-xs">類型 (由入口決定)</Label>

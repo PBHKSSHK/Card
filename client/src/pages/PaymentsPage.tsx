@@ -20,7 +20,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import {
   HandCoins, Plus, Filter, CheckCircle2, Clock, XCircle, FileCheck,
-  Send, Eye, Loader2, UploadCloud, Building2, UserRound,
+  Send, Eye, Loader2, UploadCloud, Building2, UserRound, RefreshCw,
 } from "lucide-react";
 
 const STATUS_LABELS: Record<string, { label: string; color: string; icon: any }> = {
@@ -76,6 +76,22 @@ export default function PaymentsPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [posting, setPosting] = useState(false);
   const [postResults, setPostResults] = useState<PostResult[]>([]);
+  const [syncingVendors, setSyncingVendors] = useState(false);
+
+  // 同步 NetSuite vendor 名冊 (收款人揀選來源) — owner/admin only
+  const handleSyncVendors = async () => {
+    setSyncingVendors(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("netsuite-sync-vendors", { body: {} });
+      if (error) throw new Error(error.message || "Edge Function 呼叫失敗");
+      if (data?.error) throw new Error(data.error);
+      toast({ title: "Vendor 名冊已同步 ✓", description: `共 ${data.fetched} 個 active vendors，收起 ${data.deactivated} 個已停用` });
+      qc.invalidateQueries({ queryKey: ["ns_vendor_directory"] });
+    } catch (err: any) {
+      toast({ title: "同步失敗", description: err.message, variant: "destructive" });
+    }
+    setSyncingVendors(false);
+  };
 
   const { data: payments, isLoading } = useQuery({
     queryKey: ["payment-batches"],
@@ -184,6 +200,13 @@ export default function PaymentsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {isSuperUser && (
+            <Button variant="ghost" size="sm" onClick={handleSyncVendors} disabled={syncingVendors}
+              title="由 NetSuite 更新收款人名冊 (供應商 + 自由工作者)" data-testid="button-sync-vendors">
+              {syncingVendors ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-1.5" />}
+              同步 Vendors
+            </Button>
+          )}
           <Link href="/claims/new/payment_freelancer">
             <Button variant="outline" data-testid="button-new-payment-freelancer">
               <UserRound size={16} className="mr-2" />
