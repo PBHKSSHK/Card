@@ -20,7 +20,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import {
   HandCoins, Plus, Filter, CheckCircle2, Clock, XCircle, FileCheck,
-  Send, Eye, Loader2, UploadCloud,
+  Send, Eye, Loader2, UploadCloud, Building2, UserRound,
 } from "lucide-react";
 
 const STATUS_LABELS: Record<string, { label: string; color: string; icon: any }> = {
@@ -70,6 +70,7 @@ export default function PaymentsPage() {
   const { toast } = useToast();
   const qc = useQueryClient();
   const [filterStatus, setFilterStatus] = useState<string>("all");
+  const [filterPayeeType, setFilterPayeeType] = useState<string>("all");
   const [filterPeriod, setFilterPeriod] = useState<string>("all");
   const [searchText, setSearchText] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -98,6 +99,7 @@ export default function PaymentsPage() {
   const filtered = useMemo(() => {
     let arr = payments || [];
     if (filterStatus !== "all") arr = arr.filter(c => c.status === filterStatus);
+    if (filterPayeeType !== "all") arr = arr.filter(c => (c.payee_type || "supplier") === filterPayeeType);
     if (filterPeriod !== "all") arr = arr.filter(c => c.period_month === filterPeriod);
     if (searchText) {
       const q = searchText.toLowerCase();
@@ -110,7 +112,7 @@ export default function PaymentsPage() {
       );
     }
     return arr;
-  }, [payments, filterStatus, filterPeriod, searchText]);
+  }, [payments, filterStatus, filterPayeeType, filterPeriod, searchText]);
 
   const stats = useMemo(() => {
     const arr = payments || [];
@@ -181,12 +183,20 @@ export default function PaymentsPage() {
             申請付款俾 Supplier 供應商 / Freelancer 自由工作者 — 批核後入 NetSuite 做 Bills
           </p>
         </div>
-        <Link href="/claims/new/payment">
-          <Button data-testid="button-new-payment">
-            <Plus size={16} className="mr-2" />
-            新增 付款申請
-          </Button>
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link href="/claims/new/payment_freelancer">
+            <Button variant="outline" data-testid="button-new-payment-freelancer">
+              <UserRound size={16} className="mr-2" />
+              新增 自由工作者付款
+            </Button>
+          </Link>
+          <Link href="/claims/new/payment_supplier">
+            <Button data-testid="button-new-payment-supplier">
+              <Building2 size={16} className="mr-2" />
+              新增 供應商付款
+            </Button>
+          </Link>
+        </div>
       </div>
 
       {/* Stats */}
@@ -282,6 +292,14 @@ export default function PaymentsPage() {
             className="max-w-xs"
             data-testid="input-search"
           />
+          <Select value={filterPayeeType} onValueChange={setFilterPayeeType}>
+            <SelectTrigger className="w-[170px]" data-testid="select-payee-type"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部類型</SelectItem>
+              <SelectItem value="supplier">Supplier 供應商</SelectItem>
+              <SelectItem value="freelancer">Freelancer 自由工作者</SelectItem>
+            </SelectContent>
+          </Select>
           <Select value={filterStatus} onValueChange={setFilterStatus}>
             <SelectTrigger className="w-[150px]" data-testid="select-status"><SelectValue /></SelectTrigger>
             <SelectContent>

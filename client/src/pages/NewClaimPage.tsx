@@ -24,10 +24,6 @@ import {
 
 type ClaimType = "expenses" | "transportation" | "payment";
 
-const PAYEE_TYPES = [
-  { code: "supplier", label: "Supplier 供應商" },
-  { code: "freelancer", label: "Freelancer 自由工作者" },
-];
 const PAYMENT_METHODS = [
   { code: "bank_transfer", label: "銀行轉賬" },
   { code: "fps", label: "FPS 轉數快" },
@@ -154,9 +150,12 @@ export default function NewClaimPage() {
   const [, setLocation] = useLocation();
   const editId = editParams?.id || null;
   const isEdit = !!editId;
+  // 付款申請分開兩個入口: /claims/new/payment_supplier (供應商) 同
+  // /claims/new/payment_freelancer (自由工作者) — 類型由入口鎖死。
+  const routeType = params?.type || "";
   const [initialType, setInitialType] = useState<ClaimType>(
-    params?.type === "transportation" ? "transportation"
-      : params?.type === "payment" ? "payment"
+    routeType === "transportation" ? "transportation"
+      : routeType.startsWith("payment") ? "payment"
       : "expenses"
   );
   // claim type — new 由 URL 決定；edit 由 loaded batch 決定（先用初始值，load 完會更新）
@@ -189,7 +188,9 @@ export default function NewClaimPage() {
 
   // Payment requisition (付款申請) — 收款人 + 付款資料
   const [payeeName, setPayeeName] = useState("");
-  const [payeeType, setPayeeType] = useState("supplier");
+  const [payeeType, setPayeeType] = useState(
+    routeType === "payment_freelancer" ? "freelancer" : "supplier"
+  );
   const [paymentMethod, setPaymentMethod] = useState("bank_transfer");
   const [payeeBank, setPayeeBank] = useState("");
   const [payeeBankAccount, setPayeeBankAccount] = useState("");
@@ -887,7 +888,8 @@ export default function NewClaimPage() {
 
   const Icon = claimType === "expenses" ? Receipt : claimType === "payment" ? HandCoins : Car;
   const typeLabel = claimType === "expenses" ? "日常駛費 Claim"
-    : claimType === "payment" ? "付款申請 Payment Requisition"
+    : claimType === "payment"
+      ? (payeeType === "freelancer" ? "自由工作者付款申請 (Freelancer)" : "供應商付款申請 (Supplier)")
     : "交通費 Claim";
   const pageTitle = isEdit
     ? (originalStatus === "rejected" ? `修改退回申請 · ${typeLabel}` : `修改草稿 · ${typeLabel}`)
@@ -1014,13 +1016,10 @@ export default function NewClaimPage() {
                 placeholder="Supplier / freelancer 名" data-testid="input-payee-name" />
             </div>
             <div>
-              <Label className="text-xs">類型</Label>
-              <Select value={payeeType} onValueChange={setPayeeType}>
-                <SelectTrigger data-testid="select-payee-type"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {PAYEE_TYPES.map(t => <SelectItem key={t.code} value={t.code}>{t.label}</SelectItem>)}
-                </SelectContent>
-              </Select>
+              <Label className="text-xs">類型 (由入口決定)</Label>
+              <div className="h-9 flex items-center px-3 rounded-md border border-border bg-muted/30 text-sm" data-testid="payee-type-fixed">
+                {payeeType === "freelancer" ? "Freelancer 自由工作者" : "Supplier 供應商"}
+              </div>
             </div>
             <div>
               <Label className="text-xs">付款方式</Label>
