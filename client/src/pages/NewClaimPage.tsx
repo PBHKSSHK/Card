@@ -18,6 +18,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import {
   ArrowLeft, Plus, Trash2, Receipt, Car, Save, Send, Upload, X, UserCog, RefreshCw, HandCoins,
@@ -196,8 +197,8 @@ export default function NewClaimPage() {
   const [fullName, setFullName] = useState(profile?.full_name || profile?.email || session?.user?.email || "");
   const [nickName, setNickName] = useState("");
   const [department, setDepartment] = useState("");
-  // Charge To 已搬落明細行 (每行自己揀) — 表頭唔再有選單。
-  // 批號公司 / 審批路由 / journal payer 由「第一行有 Charge To 嘅行」推導。
+  // 表頭 Charge To (預設歸屬) — 明細行可以用 Assign / Split 逐行改
+  const [chargeToCode, setChargeToCode] = useState("");
   const [periodMonth, setPeriodMonth] = useState(currentMonthHK());  // HK-local (fix #4)
   const [submitDate, setSubmitDate] = useState(todayHK());  // HK-local (fix #4)
 
@@ -317,6 +318,7 @@ export default function NewClaimPage() {
         setNickName(batch.nick_name || "");
         setDepartment(batch.department || "");
         const batchChargeTo = batch.charge_to_code || "";
+        setChargeToCode(batchChargeTo);
         setPeriodMonth(batch.period_month || currentMonthHK());  // HK-local fallback (fix #4)
         setSubmitDate(batch.submit_date || todayHK());  // HK-local fallback (fix #4)
         setClaimantUserId(batch.claimant_user_id || myUid || "");
@@ -364,8 +366,8 @@ export default function NewClaimPage() {
             hkd_amount: l.hkd_amount != null ? String(l.hkd_amount) : "",
             billable_to_client_hkd: l.billable_to_client_hkd != null ? String(l.billable_to_client_hkd) : "0",
             expense_category_code: l.expense_category_code || "",
-            // 舊單 (charge to 喺表頭年代) — 每行backfill返表頭值
-            line_charge_to: l.line_charge_to || batchChargeTo || "",
+            // 行冇自己嘅 charge to = 跟表頭 (Assign/Split 先會寫入)
+            line_charge_to: l.line_charge_to === batchChargeTo ? "" : (l.line_charge_to || ""),
             means_of_transport: l.means_of_transport || "TAXI",
             taxi_reason: l.taxi_reason || "",
             // attach DB id so we can map back line-level attachments
@@ -476,10 +478,7 @@ export default function NewClaimPage() {
     },
   });
 
-  // 表頭 charge_to = 第一行有揀嘅行 (batch 級用途: 批號公司 / 審批路由 / journal payer)
-  const chargeToCode = lines.find(l => (l.line_charge_to || "").trim())?.line_charge_to || "";
-
-  // 每行根據自己嘅 Charge To entity filter projects
+  // 每行根據自己嘅 Charge To entity filter projects (冇自己嘅就跟表頭)
   const entityForChargeTo = (ct?: string) => (ct ? chargeToMap.get(ct)?.entity_code : null);
   const projectsForChargeTo = (ct?: string) => {
     const entity = entityForChargeTo(ct);
@@ -654,6 +653,110 @@ export default function NewClaimPage() {
     });
   }
 
+  // ---- Assign / Split (同 credit card app) ----
+  // Assign: 改一行嘅歸屬 (Charge To / Project / Category)
+  const [assignKey, setAssignKey] = useState<string | null>(null);
+  const [assignCt, setAssignCt] = useState("");
+  const [assignProj, setAssignProj] = useState("");
+  const [assignCat, setAssignCat] = useState("");
+
+  function openAssign(l: LineForm) {
+    setAssignKey(l._key);
+    setAssignCt(l.line_charge_to || chargeToCode || "");
+    setAssignProj(l.project_code || "");
+    setAssignCat(l.expense_category_code || "");
+  }
+  function saveAssign() {
+    if (!assignKey) return;
+    if (!assignCt) {
+      toast({ title: "未揀 Charge To", variant: "destructive" });
+      return;
+    }
+    updateLine(assignKey, {
+      // 同表頭一樣就唔使寫入行 (跟表頭)
+      line_charge_to: assignCt === chargeToCode ? "" : assignCt,
+      project_code: assignProj,
+      expense_category_code: assignCat,
+    });
+    setAssignKey(null);
+  }
+
+  // Split: 一行拆做幾行 (每份自己嘅歸屬 + 金額，合計 = 原行金額)
+  type SplitPiece = { charge_to: string; project: string; category: string; amount: string };
+  const [splitKey, setSplitKey] = useState<string | null>(null);
+  const [splitPieces, setSplitPieces] = useState<SplitPiece[]>([]);
+  const splitSrc = splitKey ? lines.find(x => x._key === splitKey) : undefined;
+
+  function openSplit(l: LineForm) {
+    if (!l.hkd_amount || !(parseFloat(l.hkd_amount) > 0)) {
+      toast({ title: "先填金額", description: "呢行要有 HKD 金額先可以拆分", variant: "destructive" });
+      return;
+    }
+    setSplitKey(l._key);
+    setSplitPieces([
+      { charge_to: l.line_charge_to || chargeToCode || "", project: l.project_code || "", category: l.expense_category_code || "", amount: "" },
+      { charge_to: "", project: "", category: "", amount: "" },
+    ]);
+  }
+  function updatePiece(i: number, patch: Partial<SplitPiece>) {
+    setSplitPieces(prev => prev.map((p, j) => {
+      if (j !== i) return p;
+      const merged = { ...p, ...patch };
+      // 轉公司 → project 清走
+      if ("charge_to" in patch && p.project && entityForChargeTo(merged.charge_to) !== entityForChargeTo(p.charge_to)) {
+        merged.project = "";
+      }
+      // project 轉咗 → category 唔夾就清
+      if ("project" in patch && merged.category) {
+        const cat = expenseCategoriesRaw.find((c: any) => c.category_key === merged.category);
+        if (cat && !!merged.project !== isProjectCat(cat)) merged.category = "";
+      }
+      return merged;
+    }));
+  }
+  function confirmSplit() {
+    const src = splitSrc;
+    if (!src) return;
+    const total = parseFloat(src.hkd_amount || "0") || 0;
+    const pieces = splitPieces.filter(p => (parseFloat(p.amount || "0") || 0) > 0);
+    if (pieces.length < 2) {
+      toast({ title: "至少要拆兩份", description: "每份都要有金額", variant: "destructive" });
+      return;
+    }
+    const sum = pieces.reduce((s, p) => s + parseFloat(p.amount), 0);
+    if (Math.abs(sum - total) > 0.01) {
+      toast({ title: "拆分合計唔啱數", description: `各份合計 ${sum.toFixed(2)}，要等於原行金額 ${total.toFixed(2)}`, variant: "destructive" });
+      return;
+    }
+    if (pieces.some(p => !p.charge_to)) {
+      toast({ title: "每份都要揀 Charge To", variant: "destructive" });
+      return;
+    }
+    const fx = parseFloat(src.fx_rate || "1") || 1;
+    setLines(prev => {
+      const idx = prev.findIndex(x => x._key === src._key);
+      if (idx < 0) return prev;
+      const rows: LineForm[] = pieces.map((p, i) => {
+        const amt = parseFloat(p.amount);
+        const row: LineForm = {
+          ...src,
+          _key: genKey(),
+          receipts: i === 0 ? src.receipts : [],
+          line_charge_to: p.charge_to === chargeToCode ? "" : p.charge_to,
+          project_code: p.project,
+          expense_category_code: p.category,
+          hkd_amount: p.amount,
+          original_amount: src.currency && src.currency !== "HKD" && fx > 0 ? (amt / fx).toFixed(2) : p.amount,
+        };
+        delete (row as any)._existing_line_id;
+        return row;
+      });
+      const next = [...prev.slice(0, idx), ...rows, ...prev.slice(idx + 1)];
+      return next.map((x, i2) => ({ ...x, item_no: i2 + 1 }));
+    });
+    setSplitKey(null);
+  }
+
   function removeLine(key: string) {
     setLines(prev => prev.filter(l => l._key !== key).map((l, idx) => ({ ...l, item_no: idx + 1 })));
   }
@@ -746,16 +849,9 @@ export default function NewClaimPage() {
     if (!session?.user?.id) return;
     // Draft 可以唔填 charge_to / full_name；submit 先要 enforce
     if (asSubmit) {
-      // 每行有金額嘅明細都要有自己嘅 Charge To (第 1 行兼決定批號公司/審批路由)
-      const noCt = lines.filter(l => l.hkd_amount && parseFloat(l.hkd_amount) > 0 && !(l.line_charge_to || "").trim());
-      if (noCt.length > 0 || !chargeToCode) {
-        toast({
-          title: "缺少 Charge To",
-          description: noCt.length > 0
-            ? `第 ${noCt.map(l => l.item_no).join(", ")} 行未揀 Charge To`
-            : "請喺明細行揀 Charge To",
-          variant: "destructive",
-        });
+      // 表頭 Charge To 必填 (預設歸屬)；個別行用 Assign/Split 改咗就用行嘅
+      if (!chargeToCode) {
+        toast({ title: "缺少 Charge To", description: "請喺表頭選擇 Charge To Code", variant: "destructive" });
         return;
       }
       if (!fullName) {
@@ -1308,9 +1404,33 @@ export default function NewClaimPage() {
             <Label className="text-xs">Submit Date</Label>
             <Input type="date" value={submitDate} onChange={(e) => setSubmitDate(e.target.value)} data-testid="input-submit-date" />
           </div>
+          {/* 第二行: Charge To (預設歸屬) + Period (claim forms 先有) */}
+          <div className="md:col-span-2">
+            <Label className="text-xs">Charge To Code * <span className="text-muted-foreground">(預設歸屬 — 個別行可用 Assign / Split 改)</span></Label>
+            <Select value={chargeToCode} onValueChange={setChargeToCode}>
+              <SelectTrigger data-testid="select-charge-to"><SelectValue placeholder="選擇 Charge To" /></SelectTrigger>
+              <SelectContent className="max-h-[400px]">
+                {chargeToOptions.map(({ entity, items }) => (
+                  <div key={entity}>
+                    <div className="sticky top-0 bg-muted/60 px-2 py-1 text-[10px] font-bold uppercase text-muted-foreground">{entity}</div>
+                    {items.map((d: any) => (
+                      <SelectItem key={d.charge_to} value={d.charge_to}>
+                        <span className="font-mono text-xs">{d.charge_to}</span>
+                        <span className="ml-2 text-muted-foreground">{d.name}</span>
+                      </SelectItem>
+                    ))}
+                  </div>
+                ))}
+              </SelectContent>
+            </Select>
+            {chargeToCode && chargeToMap.get(chargeToCode) && (
+              <div className="text-xs text-muted-foreground mt-1">
+                → {chargeToMap.get(chargeToCode)?.subsidiary_full_name} · {chargeToMap.get(chargeToCode)?.name}
+              </div>
+            )}
+          </div>
           {claimType !== "payment" && (
-            /* Claim forms 第二行只保留 Period，靠右 */
-            <div className="md:col-start-3">
+            <div>
               <Label className="text-xs">Period (Month) <span className="text-muted-foreground">(明細日期只可以喺呢個月內)</span></Label>
               <Input type="month" value={periodMonth} onChange={(e) => handlePeriodChange(e.target.value)} data-testid="input-period" />
             </div>
@@ -1495,7 +1615,6 @@ export default function NewClaimPage() {
               <tr>
                 <th className="px-2 py-2 text-left w-12">#</th>
                 <th className="px-2 py-2 text-left">日期</th>
-                <th className="px-2 py-2 text-left">Charge To *</th>
                 <th className="px-2 py-2 text-left">Project</th>
                 {claimType === "transportation" && <>
                   <th className="px-2 py-2 text-left">交通工具</th>
@@ -1509,6 +1628,7 @@ export default function NewClaimPage() {
                   <th className="px-2 py-2 text-right">FX</th>
                 </>}
                 <th className="px-2 py-2 text-right">HKD 金額</th>
+                <th className="px-2 py-2 text-center w-[110px]">歸屬</th>
                 {claimType !== "transportation" && <th className="px-2 py-2 text-right">Billable</th>}
                 {claimType !== "payment" && <th className="px-2 py-2 text-center w-[140px]">收據 (可多張)</th>}
                 <th className="px-2 py-2 w-8"></th>
@@ -1529,39 +1649,6 @@ export default function NewClaimPage() {
                       }
                     }}
                     className="h-7 text-xs" /></td>
-                  {/* 每行自己嘅 Charge To — 決定條數入邊個部門/公司 (第 1 行兼定批號公司) */}
-                  <td className="px-2 py-2">
-                    <Select
-                      value={l.line_charge_to || "__none__"}
-                      onValueChange={(v) => {
-                        const ct = v === "__none__" ? "" : v;
-                        const patch: Partial<LineForm> = { line_charge_to: ct };
-                        // 轉咗公司 → project 清走 (project 係跟 entity filter 嘅)
-                        if (l.project_code && entityForChargeTo(ct) !== entityForChargeTo(l.line_charge_to)) {
-                          patch.project_code = "";
-                        }
-                        updateLine(l._key, patch);
-                      }}
-                    >
-                      <SelectTrigger className="h-7 text-xs min-w-[130px]">
-                        <SelectValue placeholder="揀 Charge To" />
-                      </SelectTrigger>
-                      <SelectContent className="max-h-[400px]">
-                        <SelectItem value="__none__">—</SelectItem>
-                        {chargeToOptions.map(({ entity, items }) => (
-                          <div key={entity}>
-                            <div className="sticky top-0 bg-muted/60 px-2 py-1 text-[10px] font-bold uppercase text-muted-foreground">{entity}</div>
-                            {items.map((d: any) => (
-                              <SelectItem key={d.charge_to} value={d.charge_to}>
-                                <span className="font-mono text-[10px]">{d.charge_to}</span>
-                                <span className="ml-1 text-muted-foreground">{d.name}</span>
-                              </SelectItem>
-                            ))}
-                          </div>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </td>
                   <td className="px-2 py-2">
                     <Select
                       value={l.project_code || "__none__"}
@@ -1578,19 +1665,19 @@ export default function NewClaimPage() {
                         }
                         updateLine(l._key, patch);
                       }}
-                      disabled={!l.line_charge_to}
+                      disabled={!(l.line_charge_to || chargeToCode)}
                     >
                       <SelectTrigger className="h-7 text-xs min-w-[140px]">
-                        <SelectValue placeholder={l.line_charge_to ? "—" : "先揀 Charge To"} />
+                        <SelectValue placeholder={(l.line_charge_to || chargeToCode) ? "—" : "先揀 Charge To"} />
                       </SelectTrigger>
                       <SelectContent className="max-h-[400px]">
                         <SelectItem value="__none__">—</SelectItem>
-                        {projectsForChargeTo(l.line_charge_to).length === 0 && l.line_charge_to && (
+                        {projectsForChargeTo(l.line_charge_to || chargeToCode).length === 0 && (l.line_charge_to || chargeToCode) && (
                           <div className="px-2 py-1 text-[10px] text-muted-foreground">
-                            {entityForChargeTo(l.line_charge_to)} 沒有可選 project
+                            {entityForChargeTo(l.line_charge_to || chargeToCode)} 沒有可選 project
                           </div>
                         )}
-                        {projectsForChargeTo(l.line_charge_to).map((p: any) => (
+                        {projectsForChargeTo(l.line_charge_to || chargeToCode).map((p: any) => (
                           <SelectItem key={p.id || p.project_id} value={p.project_id}>
                             <span className="font-mono text-[10px] mr-1">{p.project_id}</span>
                             <span className="text-muted-foreground">{p.project_name}</span>
@@ -1694,6 +1781,24 @@ export default function NewClaimPage() {
                     </td>
                   </>}
                   <td className="px-2 py-2"><Input type="number" step="0.01" value={l.hkd_amount} onChange={(e) => updateLine(l._key, { hkd_amount: e.target.value })} className="h-7 text-xs text-right font-medium w-[100px]" /></td>
+                  {/* Assign / Split — 同 credit card app 一樣：Assign 改呢行歸屬，Split 拆做幾行 */}
+                  <td className="px-2 py-2 text-center">
+                    <div className="flex flex-col items-center gap-0.5">
+                      <div className="flex gap-1">
+                        <button type="button" onClick={() => openAssign(l)}
+                          className="text-[10px] px-1.5 py-0.5 rounded border border-border bg-muted hover:bg-muted/70"
+                          data-testid={`button-assign-${l.item_no}`}>Assign</button>
+                        <button type="button" onClick={() => openSplit(l)}
+                          className="text-[10px] px-1.5 py-0.5 rounded border border-border bg-muted hover:bg-muted/70"
+                          data-testid={`button-split-${l.item_no}`}>Split</button>
+                      </div>
+                      {l.line_charge_to && l.line_charge_to !== chargeToCode && (
+                        <span className="text-[9px] font-mono px-1 py-0.5 rounded bg-sky-500/15 text-sky-700 dark:text-sky-400" title="呢行歸屬同表頭唔同">
+                          {l.line_charge_to}
+                        </span>
+                      )}
+                    </div>
+                  </td>
                   {claimType !== "transportation" && (
                     <td className="px-2 py-2"><Input type="number" step="0.01" value={l.billable_to_client_hkd} onChange={(e) => updateLine(l._key, { billable_to_client_hkd: e.target.value })} className="h-7 text-xs text-right w-[90px]" /></td>
                   )}
@@ -1763,11 +1868,11 @@ export default function NewClaimPage() {
             </tbody>
             <tfoot>
               <tr className="border-t-2 border-border font-medium">
-                <td colSpan={claimType === "transportation" ? 7 : 9} className="px-2 py-2 text-right">TOTAL</td>
+                <td colSpan={claimType === "transportation" ? 6 : 8} className="px-2 py-2 text-right">TOTAL</td>
                 <td className="px-2 py-2 text-right tabular-nums">
                   HK${totalHkd.toFixed(2)}
                 </td>
-                <td colSpan={claimType === "payment" ? 2 : claimType !== "transportation" ? 3 : 2}></td>
+                <td colSpan={claimType === "payment" ? 3 : claimType !== "transportation" ? 4 : 3}></td>
               </tr>
             </tfoot>
           </table>
@@ -1901,6 +2006,173 @@ export default function NewClaimPage() {
           <Send size={14} className="mr-1" /> 提交申請
         </Button>
       </div>
+
+      {/* Assign dialog — 改一行嘅歸屬 (Charge To / Project / Category) */}
+      <Dialog open={!!assignKey} onOpenChange={(o) => { if (!o) setAssignKey(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Assign — 呢行歸屬</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <Label className="text-xs">Charge To *</Label>
+              <Select value={assignCt || undefined} onValueChange={(v) => {
+                if (entityForChargeTo(v) !== entityForChargeTo(assignCt)) setAssignProj("");
+                setAssignCt(v);
+              }}>
+                <SelectTrigger data-testid="assign-charge-to"><SelectValue placeholder="揀 Charge To" /></SelectTrigger>
+                <SelectContent className="max-h-[360px]">
+                  {chargeToOptions.map(({ entity, items }) => (
+                    <div key={entity}>
+                      <div className="sticky top-0 bg-muted/60 px-2 py-1 text-[10px] font-bold uppercase text-muted-foreground">{entity}</div>
+                      {items.map((d: any) => (
+                        <SelectItem key={d.charge_to} value={d.charge_to}>
+                          <span className="font-mono text-xs">{d.charge_to}</span>
+                          <span className="ml-2 text-muted-foreground">{d.name}</span>
+                        </SelectItem>
+                      ))}
+                    </div>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs">Project Code</Label>
+              <Select value={assignProj || "__none__"} onValueChange={(v) => {
+                const proj = v === "__none__" ? "" : v;
+                setAssignProj(proj);
+                const cat = expenseCategoriesRaw.find((c: any) => c.category_key === assignCat);
+                if (cat && !!proj !== isProjectCat(cat)) setAssignCat("");
+              }} disabled={!assignCt}>
+                <SelectTrigger data-testid="assign-project"><SelectValue placeholder={assignCt ? "—" : "先揀 Charge To"} /></SelectTrigger>
+                <SelectContent className="max-h-[360px]">
+                  <SelectItem value="__none__">—</SelectItem>
+                  {projectsForChargeTo(assignCt).map((p: any) => (
+                    <SelectItem key={p.id || p.project_id} value={p.project_id}>
+                      <span className="font-mono text-[10px] mr-1">{p.project_id}</span>
+                      <span className="text-muted-foreground">{p.project_name}</span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {claimType !== "transportation" && (
+              <div>
+                <Label className="text-xs">Category</Label>
+                <Select value={assignCat || "__none__"} onValueChange={(v) => setAssignCat(v === "__none__" ? "" : v)}>
+                  <SelectTrigger data-testid="assign-category">
+                    <SelectValue placeholder={assignProj ? "揀 [Project] 類別" : "— 選費用類別 —"} />
+                  </SelectTrigger>
+                  <SelectContent className="max-h-[360px]">
+                    <SelectItem value="__none__">—</SelectItem>
+                    {categoriesForLine(!!assignProj).map((c: any) => (
+                      <SelectItem key={c.category_key} value={c.category_key}>
+                        <span className="font-mono text-[10px] text-muted-foreground mr-1">{c.ns_account_number}</span>
+                        {c.label_zh}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAssignKey(null)}>取消</Button>
+            <Button onClick={saveAssign} data-testid="assign-save">儲存</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Split dialog — 一行拆做幾行，每份自己嘅歸屬 + 金額 */}
+      <Dialog open={!!splitKey} onOpenChange={(o) => { if (!o) setSplitKey(null); }}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>
+              Split — 拆分呢行 (原行金額 HK${Number(splitSrc?.hkd_amount || 0).toFixed(2)})
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2">
+            {splitPieces.map((p, i) => (
+              <div key={i} className="flex gap-2 items-end flex-wrap border-b border-border/40 pb-2">
+                <div className="min-w-[150px]">
+                  <Label className="text-[10px]">Charge To *</Label>
+                  <Select value={p.charge_to || undefined} onValueChange={(v) => updatePiece(i, { charge_to: v })}>
+                    <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="揀…" /></SelectTrigger>
+                    <SelectContent className="max-h-[320px]">
+                      {chargeToOptions.map(({ entity, items }) => (
+                        <div key={entity}>
+                          <div className="sticky top-0 bg-muted/60 px-2 py-1 text-[10px] font-bold uppercase text-muted-foreground">{entity}</div>
+                          {items.map((d: any) => (
+                            <SelectItem key={d.charge_to} value={d.charge_to}>
+                              <span className="font-mono text-[10px]">{d.charge_to}</span>
+                              <span className="ml-1 text-muted-foreground">{d.name}</span>
+                            </SelectItem>
+                          ))}
+                        </div>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="min-w-[150px]">
+                  <Label className="text-[10px]">Project</Label>
+                  <Select value={p.project || "__none__"} onValueChange={(v) => updatePiece(i, { project: v === "__none__" ? "" : v })} disabled={!p.charge_to}>
+                    <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="—" /></SelectTrigger>
+                    <SelectContent className="max-h-[320px]">
+                      <SelectItem value="__none__">—</SelectItem>
+                      {projectsForChargeTo(p.charge_to).map((pr: any) => (
+                        <SelectItem key={pr.id || pr.project_id} value={pr.project_id}>
+                          <span className="font-mono text-[10px] mr-1">{pr.project_id}</span>
+                          <span className="text-muted-foreground">{pr.project_name}</span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                {claimType !== "transportation" && (
+                  <div className="min-w-[170px]">
+                    <Label className="text-[10px]">Category</Label>
+                    <Select value={p.category || "__none__"} onValueChange={(v) => updatePiece(i, { category: v === "__none__" ? "" : v })}>
+                      <SelectTrigger className="h-8 text-xs"><SelectValue placeholder={p.project ? "[Project] 類別" : "—"} /></SelectTrigger>
+                      <SelectContent className="max-h-[320px]">
+                        <SelectItem value="__none__">—</SelectItem>
+                        {categoriesForLine(!!p.project).map((c: any) => (
+                          <SelectItem key={c.category_key} value={c.category_key}>
+                            <span className="font-mono text-[10px] text-muted-foreground mr-1">{c.ns_account_number}</span>
+                            {c.label_zh}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+                <div className="w-[110px]">
+                  <Label className="text-[10px]">金額 (HKD) *</Label>
+                  <Input type="number" step="0.01" className="h-8 text-xs text-right"
+                    value={p.amount} onChange={(e) => updatePiece(i, { amount: e.target.value })} />
+                </div>
+                {splitPieces.length > 2 && (
+                  <Button size="icon" variant="ghost" className="h-8 w-8"
+                    onClick={() => setSplitPieces(prev => prev.filter((_, j) => j !== i))}>
+                    <Trash2 size={12} className="text-destructive" />
+                  </Button>
+                )}
+              </div>
+            ))}
+            <div className="flex items-center justify-between">
+              <Button size="sm" variant="outline"
+                onClick={() => setSplitPieces(prev => [...prev, { charge_to: "", project: "", category: "", amount: "" }])}>
+                <Plus size={12} className="mr-1" /> 加一份
+              </Button>
+              <div className="text-xs tabular-nums">
+                各份合計: HK${splitPieces.reduce((s, p) => s + (parseFloat(p.amount || "0") || 0), 0).toFixed(2)}
+                {" / "}原行: HK${Number(splitSrc?.hkd_amount || 0).toFixed(2)}
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSplitKey(null)}>取消</Button>
+            <Button onClick={confirmSplit} data-testid="split-confirm">確認拆分</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
