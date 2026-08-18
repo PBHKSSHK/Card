@@ -779,13 +779,14 @@ export default function NewClaimPage() {
         });
         return;
       }
-      // 付款申請發票規則：必填欄位 + 每行合計=發票總額 + 附件 + 查重
+      // 付款申請發票規則：供應商必須有發票；自由工作者可以冇發票 (直接申請表填寫)
       if (claimType === "payment") {
-        if (!supplierInvoiceNo.trim()) {
-          toast({ title: "缺少發票號", description: "供應商發票號必填", variant: "destructive" });
+        const invoiceRequired = payeeType !== "freelancer";
+        if (invoiceRequired && !supplierInvoiceNo.trim()) {
+          toast({ title: "缺少發票號", description: "供應商付款申請必須填發票號", variant: "destructive" });
           return;
         }
-        if (!invoiceDate) {
+        if (invoiceRequired && !invoiceDate) {
           toast({ title: "缺少發票日期", description: "發票日期必填", variant: "destructive" });
           return;
         }
@@ -794,64 +795,68 @@ export default function NewClaimPage() {
           return;
         }
         const invAmt = parseFloat(invoiceAmount);
-        if (!invoiceAmount || isNaN(invAmt) || invAmt <= 0) {
+        if (invoiceRequired && (!invoiceAmount || isNaN(invAmt) || invAmt <= 0)) {
           toast({ title: "缺少發票總額", description: "發票總額必填 (要大過 0)", variant: "destructive" });
           return;
         }
-        // 附件 (發票影像) 必填
+        // 附件 (發票影像) — 供應商必填；自由工作者冇發票可以直接提交
         const lineReceiptCount = lines.reduce((s, l) => s + (l.receipts?.length || 0), 0);
         const keptExisting =
           existingAttachments.filter((a: any) => !removedAttachmentIds.has(a.id)).length +
           Array.from(existingLineAttachments.values()).flat().filter((a: any) => !removedAttachmentIds.has(a.id)).length;
-        if (attachments.length + lineReceiptCount + keptExisting === 0) {
+        if (invoiceRequired && attachments.length + lineReceiptCount + keptExisting === 0) {
           toast({ title: "缺少附件", description: "請上載發票影像 (可以用「上載發票自動填表」)", variant: "destructive" });
           return;
         }
-        // 每行金額合計 = 發票總額 (HKD 發票對 HKD 行；外幣發票對同幣別原幣)
-        const sum = invoiceCurrency === "HKD"
-          ? lines.reduce((s, l) => s + (parseFloat(l.hkd_amount || "0") || 0), 0)
-          : lines.reduce((s, l) => s + ((l.currency || "HKD") === invoiceCurrency ? (parseFloat(l.original_amount || "0") || 0) : 0), 0);
-        if (Math.abs(sum - invAmt) > 0.01) {
-          toast({
-            title: "行合計唔等於發票總額",
-            description: `明細行合計 ${invoiceCurrency} ${sum.toFixed(2)}，發票總額 ${invoiceCurrency} ${invAmt.toFixed(2)} — 拆行後要啱數先可以提交`,
-            variant: "destructive",
-          });
-          return;
-        }
-        // App 內查重：同一供應商 + 同一發票號 (DB trigger 都會擋，呢度俾清楚提示)
-        // 只計已提交嘅單 — draft (包括提交失敗留低嘅) 唔應該阻住正式提交
-        const escaped = supplierInvoiceNo.trim().replace(/[%_\\]/g, (m) => "\\" + m);
-        const { data: dupApp } = await supabase.from("claim_batches")
-          .select("id, batch_no, payee_name, status")
-          .eq("claim_type", "payment")
-          .not("status", "in", "(rejected,draft)")
-          .ilike("supplier_invoice_no", escaped);
-        const dupHit = (dupApp || []).find((b: any) => b.id !== editId &&
-          String(b.payee_name || "").trim().toLowerCase() === payeeName.trim().toLowerCase());
-        if (dupHit) {
-          toast({
-            title: "重複發票",
-            description: `${dupHit.batch_no} 已用咗 ${payeeName} 嘅發票號 ${supplierInvoiceNo}，唔可以重複申請`,
-            variant: "destructive",
-          });
-          return;
-        }
-        // NetSuite 查重：呢個 vendor 現有嘅 vendor bill 有冇同一發票號
-        try {
-          const { data: nsChk, error: nsErr } = await supabase.functions.invoke("netsuite-check-vendor-bill", {
-            body: { payee_name: payeeName.trim(), invoice_no: supplierInvoiceNo.trim() },
-          });
-          if (!nsErr && nsChk?.exists) {
+        // 有填發票總額先檢查行合計 (HKD 發票對 HKD 行；外幣發票對同幣別原幣)
+        if (invoiceAmount && !isNaN(invAmt) && invAmt > 0) {
+          const sum = invoiceCurrency === "HKD"
+            ? lines.reduce((s, l) => s + (parseFloat(l.hkd_amount || "0") || 0), 0)
+            : lines.reduce((s, l) => s + ((l.currency || "HKD") === invoiceCurrency ? (parseFloat(l.original_amount || "0") || 0) : 0), 0);
+          if (Math.abs(sum - invAmt) > 0.01) {
             toast({
-              title: "NetSuite 已有呢張發票",
-              description: `Vendor bill ${nsChk.bill?.tranid || ""}（${nsChk.bill?.trandate || ""}）已入咗數，唔可以重複申請`,
+              title: "行合計唔等於發票總額",
+              description: `明細行合計 ${invoiceCurrency} ${sum.toFixed(2)}，發票總額 ${invoiceCurrency} ${invAmt.toFixed(2)} — 拆行後要啱數先可以提交`,
               variant: "destructive",
             });
             return;
           }
-        } catch {
-          // NetSuite 暫時查唔到就唔阻提交 — app / DB 查重照樣生效
+        }
+        // 有填發票號先查重 (app + NetSuite)
+        if (supplierInvoiceNo.trim()) {
+          // App 內：同一收款人 + 同一發票號 (只計已提交嘅單，draft 唔阻)
+          const escaped = supplierInvoiceNo.trim().replace(/[%_\\]/g, (m) => "\\" + m);
+          const { data: dupApp } = await supabase.from("claim_batches")
+            .select("id, batch_no, payee_name, status")
+            .eq("claim_type", "payment")
+            .not("status", "in", "(rejected,draft)")
+            .ilike("supplier_invoice_no", escaped);
+          const dupHit = (dupApp || []).find((b: any) => b.id !== editId &&
+            String(b.payee_name || "").trim().toLowerCase() === payeeName.trim().toLowerCase());
+          if (dupHit) {
+            toast({
+              title: "重複發票",
+              description: `${dupHit.batch_no} 已用咗 ${payeeName} 嘅發票號 ${supplierInvoiceNo}，唔可以重複申請`,
+              variant: "destructive",
+            });
+            return;
+          }
+          // NetSuite：呢個 vendor 現有嘅 vendor bill 有冇同一發票號
+          try {
+            const { data: nsChk, error: nsErr } = await supabase.functions.invoke("netsuite-check-vendor-bill", {
+              body: { payee_name: payeeName.trim(), invoice_no: supplierInvoiceNo.trim() },
+            });
+            if (!nsErr && nsChk?.exists) {
+              toast({
+                title: "NetSuite 已有呢張發票",
+                description: `Vendor bill ${nsChk.bill?.tranid || ""}（${nsChk.bill?.trandate || ""}）已入咗數，唔可以重複申請`,
+                variant: "destructive",
+              });
+              return;
+            }
+          } catch {
+            // NetSuite 暫時查唔到就唔阻提交 — app / DB 查重照樣生效
+          }
         }
       }
       // 明細日期一定要喺 Period 月份之內
@@ -1388,18 +1393,23 @@ export default function NewClaimPage() {
               ))}
             </div>
             <div>
-              <Label className="text-xs">供應商發票號 * <span className="text-muted-foreground">(同一供應商不可重複)</span></Label>
+              <Label className="text-xs">
+                {payeeType === "freelancer" ? "發票號 (有發票先填)" : "供應商發票號 *"}
+                {" "}<span className="text-muted-foreground">(同一收款人不可重複)</span>
+              </Label>
               <Input value={supplierInvoiceNo} onChange={(e) => setSupplierInvoiceNo(e.target.value)} data-testid="input-supplier-invoice" />
               <div className="text-[10px] text-muted-foreground mt-0.5">
-                一張申請只認一張發票 — 同一供應商有多張發票，請分開多次申請
+                {payeeType === "freelancer"
+                  ? "自由工作者可以冇發票 — 直接喺表格填明細提交"
+                  : "一張申請只認一張發票 — 同一供應商有多張發票，請分開多次申請"}
               </div>
             </div>
             <div>
-              <Label className="text-xs">發票日期 *</Label>
+              <Label className="text-xs">{payeeType === "freelancer" ? "發票日期" : "發票日期 *"}</Label>
               <Input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} data-testid="input-invoice-date" />
             </div>
             <div>
-              <Label className="text-xs">發票總額 *</Label>
+              <Label className="text-xs">{payeeType === "freelancer" ? "發票總額 (有發票先填)" : "發票總額 *"}</Label>
               <div className="flex gap-1.5">
                 <Select value={invoiceCurrency} onValueChange={setInvoiceCurrency}>
                   <SelectTrigger className="w-[84px]" data-testid="select-invoice-currency"><SelectValue /></SelectTrigger>
@@ -1411,7 +1421,11 @@ export default function NewClaimPage() {
                   onChange={(e) => setInvoiceAmount(e.target.value)}
                   placeholder="0.00" className="text-right" data-testid="input-invoice-amount" />
               </div>
-              <div className="text-[10px] text-muted-foreground mt-0.5">明細行合計要等於呢個數 (可以拆多行唔同 project / 部門)</div>
+              <div className="text-[10px] text-muted-foreground mt-0.5">
+                {payeeType === "freelancer"
+                  ? "有填嘅話，明細行合計要等於呢個數；冇發票以明細行合計為準"
+                  : "明細行合計要等於呢個數 (可以拆多行唔同 project / 部門)"}
+              </div>
             </div>
             <div>
               <Label className="text-xs">付款到期日</Label>
@@ -1481,7 +1495,9 @@ export default function NewClaimPage() {
             </div>
           )}
           <div className="text-[10px] text-muted-foreground">
-            記得喺下面附件位上載 supplier invoice / 報價單，方便審批。
+            {payeeType === "freelancer"
+              ? "有發票請喺下面附件位上載；冇發票直接填明細提交都得。"
+              : "記得喺下面附件位上載 supplier invoice / 報價單，方便審批。"}
           </div>
         </CardContent></Card>
       )}
