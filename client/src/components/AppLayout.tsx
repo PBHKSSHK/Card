@@ -55,6 +55,15 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const { profile, signOut, isSuperUser, isOwner, hasModule } = useAuth();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
+  // Sidebar active 判斷。特別處理：付款申請表格 (/claims/new/payment_supplier
+  // / payment_freelancer / payment) 屬於「付款申請」面板，唔算 Claim Forms。
+  const isNavActive = (href: string) => {
+    const isPaymentForm = location.startsWith("/claims/new/payment");
+    if (href === "/payments") return location.startsWith("/payments") || isPaymentForm;
+    if (href === "/claims") return location.startsWith("/claims") && !isPaymentForm;
+    return location === href || (href !== "/" && location.startsWith(href));
+  };
+
   return (
     <div className="flex h-screen overflow-hidden bg-background">
       {/* Mobile overlay */}
@@ -86,7 +95,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             <div className="px-3 py-1.5 text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider">Credit Card</div>
             <div className="space-y-0.5">
               {ccNavItems.filter(i => !i.superOnly || isSuperUser).map((item) => {
-                const isActive = location === item.href || (item.href !== "/" && location.startsWith(item.href));
+                const isActive = isNavActive(item.href);
                 return (
                   <Link key={item.href} href={item.href}>
                     <div
@@ -118,7 +127,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             <div className="px-3 py-1.5 text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider">Bank</div>
             <div className="space-y-0.5">
               {bankNavItems.filter(i => !i.superOnly || isSuperUser).map((item) => {
-                const isActive = location === item.href || (item.href !== "/" && location.startsWith(item.href));
+                const isActive = isNavActive(item.href);
                 return (
                   <Link key={item.href} href={item.href}>
                     <div
@@ -150,7 +159,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             <div className="px-3 py-1.5 text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider">Claims</div>
             <div className="space-y-0.5">
               {claimNavItems.filter(i => !i.superOnly || isSuperUser).map((item) => {
-                const isActive = location === item.href || (item.href !== "/" && location.startsWith(item.href));
+                const isActive = isNavActive(item.href);
                 return (
                   <Link key={item.href} href={item.href}>
                     <div
@@ -181,7 +190,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           <div className="mt-2 pt-2 border-t border-sidebar-border/50">
             <div className="space-y-0.5">
               {settingsNavItems.map((item) => {
-                const isActive = location === item.href || (item.href !== "/" && location.startsWith(item.href));
+                const isActive = isNavActive(item.href);
                 return (
                   <Link key={item.href} href={item.href}>
                     <div
