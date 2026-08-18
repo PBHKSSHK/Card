@@ -20,6 +20,7 @@ import BankRecon from "@/pages/BankRecon";
 import BankUploadCentre from "@/pages/BankUploadCentre";
 import ClaimsPage from "@/pages/ClaimsPage";
 import PaymentsPage from "@/pages/PaymentsPage";
+import PaymentsExportPage from "@/pages/PaymentsExportPage";
 import NewClaimPage from "@/pages/NewClaimPage";
 import ClaimDetailPage from "@/pages/ClaimDetailPage";
 import ApprovalInboxPage from "@/pages/ApprovalInboxPage";
@@ -57,6 +58,10 @@ function Gate({ component: C, superOnly, module }: {
   return <C />;
 }
 
+// 兩個審批 Inbox — claims (日常駛費+交通費) 同 付款申請 分開
+const ClaimsInbox = () => <ApprovalInboxPage family="claims" />;
+const PaymentsInbox = () => <ApprovalInboxPage family="payment" />;
+
 function AppRouter() {
   return (
     <AppLayout>
@@ -73,12 +78,14 @@ function AppRouter() {
         {/* Bank 模組 (owner/admin only) */}
         <Route path="/bank-upload">{() => <Gate module="bank" superOnly component={BankUploadCentre} />}</Route>
         <Route path="/bank-recon">{() => <Gate module="bank" superOnly component={BankRecon} />}</Route>
-        {/* Claims 模組 */}
+        {/* Claims 模組 — claims 同付款申請各自有 inbox / export */}
         <Route path="/payments">{() => <Gate module="claims" component={PaymentsPage} />}</Route>
+        <Route path="/payments/inbox">{() => <Gate module="claims" component={PaymentsInbox} />}</Route>
+        <Route path="/payments/export">{() => <Gate module="claims" superOnly component={PaymentsExportPage} />}</Route>
         {/* 付款申請詳情/修改用自己嘅 URL — sidebar 先識亮「付款申請」 */}
         <Route path="/payments/:id/edit">{() => <Gate module="claims" component={NewClaimPage} />}</Route>
         <Route path="/payments/:id">{() => <Gate module="claims" component={ClaimDetailPage} />}</Route>
-        <Route path="/claims/inbox">{() => <Gate module="claims" component={ApprovalInboxPage} />}</Route>
+        <Route path="/claims/inbox">{() => <Gate module="claims" component={ClaimsInbox} />}</Route>
         <Route path="/claims/export">{() => <Gate module="claims" superOnly component={ClaimJournalExport} />}</Route>
         <Route path="/claims">{() => <Gate module="claims" component={ClaimsPage} />}</Route>
         <Route path="/claims/new/:type">{() => <Gate module="claims" component={NewClaimPage} />}</Route>

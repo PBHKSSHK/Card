@@ -27,7 +27,8 @@ const MODE_LABELS: Record<Mode, { label: string; desc: string }> = {
   all: { label: "全部待審", desc: "submitted + team_head_approved" },
 };
 
-export default function ApprovalInboxPage() {
+// family: "claims" = 日常駛費+交通費；"payment" = 付款申請 — 兩個 inbox 分開
+export default function ApprovalInboxPage({ family = "claims" }: { family?: "claims" | "payment" }) {
   const [, setLocation] = useLocation();
   const { session, isSuperUser, profile } = useAuth();
   const { toast } = useToast();
@@ -44,10 +45,12 @@ export default function ApprovalInboxPage() {
 
   // 拉 inbox 清單
   const { data: items = [], isLoading } = useQuery({
-    queryKey: ["approval-inbox", mode, session?.user?.id, isSuperUser],
+    queryKey: ["approval-inbox", family, mode, session?.user?.id, isSuperUser],
     queryFn: async () => {
       if (!session?.user?.id) return [];
       let q = supabase.from("claim_batches_with_team_head").select("*");
+      // claims inbox 唔顯示付款申請；付款申請有自己嘅 inbox
+      q = family === "payment" ? q.eq("claim_type", "payment") : q.neq("claim_type", "payment");
       if (mode === "team_head") {
         q = q.eq("status", "submitted");
         if (!isSuperUser) q = q.eq("assigned_team_head_user_id", session.user.id);
@@ -390,7 +393,7 @@ export default function ApprovalInboxPage() {
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-3">
           <Inbox size={20} className="text-primary" />
-          <h1 className="text-xl font-bold">審批 Inbox</h1>
+          <h1 className="text-xl font-bold">審批 Inbox {family === "payment" ? "· 付款申請" : "· Claims"}</h1>
           <div className="flex items-center gap-1 rounded-md bg-muted p-0.5">
             {(["team_head", "final", "all"] as Mode[]).filter(m => m !== "final" || isSuperUser).filter(m => m !== "all" || isSuperUser).map(m => (
               <button key={m} onClick={() => { setMode(m); setBulkSelected(new Set()); }}

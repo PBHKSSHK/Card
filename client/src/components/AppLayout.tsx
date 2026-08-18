@@ -28,8 +28,13 @@ const bankNavItems = [
 const claimNavItems = [
   { href: "/claims/inbox", label: "審批 Inbox", icon: Inbox, superOnly: false },
   { href: "/claims", label: "Claim Forms", icon: Receipt, superOnly: false },
-  { href: "/payments", label: "付款申請", icon: HandCoins, superOnly: false },
   { href: "/claims/export", label: "Claim Journal Export", icon: FileDown, superOnly: true },
+];
+
+const paymentNavItems = [
+  { href: "/payments/inbox", label: "審批 Inbox", icon: Inbox, superOnly: false },
+  { href: "/payments", label: "付款申請", icon: HandCoins, superOnly: false },
+  { href: "/payments/export", label: "付款申請 Export", icon: FileDown, superOnly: true },
 ];
 
 const settingsNavItems = [
@@ -59,8 +64,15 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   // / payment_freelancer / payment) 屬於「付款申請」面板，唔算 Claim Forms。
   const isNavActive = (href: string) => {
     const isPaymentForm = location.startsWith("/claims/new/payment");
-    if (href === "/payments") return location.startsWith("/payments") || isPaymentForm;
-    if (href === "/claims") return location.startsWith("/claims") && !isPaymentForm;
+    if (href === "/payments") {
+      return location === "/payments" || isPaymentForm ||
+        (location.startsWith("/payments/") &&
+          !location.startsWith("/payments/inbox") && !location.startsWith("/payments/export"));
+    }
+    if (href === "/claims") {
+      return !isPaymentForm && location.startsWith("/claims") &&
+        !location.startsWith("/claims/inbox") && !location.startsWith("/claims/export");
+    }
     return location === href || (href !== "/" && location.startsWith(href));
   };
 
@@ -164,6 +176,38 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                   <Link key={item.href} href={item.href}>
                     <div
                       data-testid={`nav-${item.label.toLowerCase().replace(/\s/g, '-')}`}
+                      className={`
+                        flex items-center gap-2.5 px-3 py-2 rounded-md text-sm cursor-pointer
+                        transition-colors duration-150
+                        ${isActive
+                          ? 'bg-sidebar-accent text-sidebar-foreground font-medium'
+                          : 'text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'
+                        }
+                      `}
+                      onClick={() => setSidebarOpen(false)}
+                    >
+                      <item.icon size={16} strokeWidth={isActive ? 2 : 1.5} />
+                      {item.label}
+                    </div>
+                  </Link>
+                );
+              })}
+            </div>
+          </div>
+
+          )}
+
+          {/* Payments Module — 付款申請有自己嘅 section */}
+          {hasModule("claims") && (
+          <div className="mb-1">
+            <div className="px-3 py-1.5 text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider">Payments 付款</div>
+            <div className="space-y-0.5">
+              {paymentNavItems.filter(i => !i.superOnly || isSuperUser).map((item) => {
+                const isActive = isNavActive(item.href);
+                return (
+                  <Link key={item.href} href={item.href}>
+                    <div
+                      data-testid={`nav-pay-${item.label.toLowerCase().replace(/\s/g, '-')}`}
                       className={`
                         flex items-center gap-2.5 px-3 py-2 rounded-md text-sm cursor-pointer
                         transition-colors duration-150
