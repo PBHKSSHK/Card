@@ -145,10 +145,20 @@ export default function PaymentsPage() {
   }, [payments]);
 
   // 已批核、未入 NetSuite 嘅批次 — Bills post 候選 (預付款另外處理)
+  const [billsSub, setBillsSub] = useState<string>("all");
   const readyBatches = useMemo(
-    () => (payments || []).filter(c => c.status === "approved" && !c.is_prepayment),
-    [payments],
+    () => (payments || []).filter(c =>
+      c.status === "approved" && !c.is_prepayment &&
+      (billsSub === "all" || c.entity_code === billsSub)),
+    [payments, billsSub],
   );
+  const billsSubOptions = useMemo(() => {
+    const s = new Set<string>();
+    (payments || []).forEach(c => {
+      if (c.status === "approved" && !c.is_prepayment && c.entity_code) s.add(c.entity_code);
+    });
+    return Array.from(s).sort();
+  }, [payments]);
   // 已批核嘅預付款 — 唔開 bill，NetSuite 用 Vendor Prepayment 手動入，之後標記
   const prepayReady = useMemo(
     () => (payments || []).filter(c => c.status === "approved" && c.is_prepayment),
@@ -269,7 +279,7 @@ export default function PaymentsPage() {
       </div>
 
       {/* NetSuite Bills 入數 (owner/admin) */}
-      {isSuperUser && readyBatches.length > 0 && (
+      {isSuperUser && billsSubOptions.length > 0 && (
         <Card>
           <CardHeader className="pb-2">
             <div className="flex items-center justify-between flex-wrap gap-2">
@@ -277,6 +287,13 @@ export default function PaymentsPage() {
                 <UploadCloud size={15} className="text-primary" />
                 入 NetSuite (Vendor Bills) — {readyBatches.length} 張已批核
               </CardTitle>
+              <Select value={billsSub} onValueChange={(v) => { setBillsSub(v); setSelectedIds(new Set()); }}>
+                <SelectTrigger className="h-8 w-[170px] text-xs" data-testid="select-bills-subsidiary"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Subsidiaries</SelectItem>
+                  {billsSubOptions.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+                </SelectContent>
+              </Select>
               <Button size="sm" onClick={handlePostBills} disabled={posting || selectedIds.size === 0}
                 data-testid="button-post-bills">
                 {posting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <UploadCloud className="h-4 w-4 mr-2" />}
@@ -318,7 +335,7 @@ export default function PaymentsPage() {
                   <div key={i} className={`text-[11px] flex items-start gap-2 ${r.status === "error" ? "text-red-600 dark:text-red-400" : r.status === "created" ? "text-emerald-700 dark:text-emerald-400" : "text-muted-foreground"}`}>
                     <span className="font-mono">{r.batch_no}</span>
                     {r.status === "created" && <span>✓ Bill {r.netsuite_id} 已建立{r.vendor ? ` (${r.vendor})` : ""}</span>}
-                    {r.status === "duplicate" && <span>已存在 NetSuite (跳過)</span>}
+                    {r.status === "duplicate" && <span>已 post 過 (跳過)</span>}
                     {r.status === "error" && <span>✗ {r.error}</span>}
                   </div>
                 ))}

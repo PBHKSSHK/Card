@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Download, ChevronDown, ChevronRight, AlertCircle, Bus, Receipt } from "lucide-react";
+import { Download, ChevronDown, ChevronRight, AlertCircle, Bus, Receipt, UploadCloud, Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { csvText, csvAmount } from "@/lib/csv";
 import { round2, sum2 } from "@/lib/money";
@@ -43,6 +43,7 @@ interface ClaimBatch {
   exported_at?: string | null;
   total_hkd: number | null;
   line_count: number | null;
+  netsuite_journal_no?: string | null;
 }
 
 interface ClaimLine {
@@ -141,6 +142,9 @@ const LS_REIMBURSEMENT_KEY = "claim_journal_reimbursement_account";
 export default function ClaimJournalExport() {
   const [selectedPeriod, setSelectedPeriod] = useState<string>("all");
   const [selectedType, setSelectedType] = useState<"all" | "transportation" | "expenses" | "payment">("all");
+  const [selectedSub, setSelectedSub] = useState<string>("all");
+  const [posting, setPosting] = useState(false);
+  const queryClient = useQueryClient();
   const [expandedBatches, setExpandedBatches] = useState<Set<string>>(new Set());
   const [showUnmappedList, setShowUnmappedList] = useState(false);
   const [highlightedKey, setHighlightedKey] = useState<string | null>(null);
@@ -167,7 +171,7 @@ export default function ClaimJournalExport() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("claim_batches")
-        .select("id,batch_no,claim_type,claimant_user_id,full_name,department,submit_date,period_month,charge_to_code,entity_code,subsidiary_full_name,department_name,status,approved_at,exported_at,total_hkd,line_count,payee_name")
+        .select("id,batch_no,claim_type,claimant_user_id,full_name,department,submit_date,period_month,charge_to_code,entity_code,subsidiary_full_name,department_name,status,approved_at,exported_at,total_hkd,line_count,payee_name,netsuite_journal_no")
         // 付款申請係入 NetSuite Bills (付款申請面板)，唔行 journal
         .neq("claim_type", "payment")
         // Only FINALLY-approved (or already-exported) batches are eligible.
@@ -661,8 +665,56 @@ export default function ClaimJournalExport() {
       entryNo++;
     }
 
-    return result;
-  }, [filteredBatches, linesByBatch, categoryByKey, chargeToSubsidiary, chargeToDeptName, chargeToEntity, icByEntity, accountFullNameMap, projectIdToName, reimbursementAccount, empByUid, icVendorByEmployeeEntity]);
+    // Subsidiary filter — 成個 batch 嘅行都係同一 payer subsidiary，filter 唔會拆散 entry
+    return selectedSub === "all" ? result : result.filter((e) => e.subsidiary === selectedSub);
+  }, [filteredBatches, linesByBatch, categoryByKey, chargeToSubsidiary, chargeToDeptName, chargeToEntity, icByEntity, accountFullNameMap, projectIdToName, reimbursementAccount, empByUid, icVendorByEmployeeEntity, selectedSub]);
+
+  // Subsidiary options (由 batches 嚟，唔受 selectedSub 影響)
+  const subsidiaryOptions = useMemo(() => {
+    const s = new Set<string>();
+    (rawBatches || []).forEach((b) => {
+      const sub = b.subsidiary_full_name || (b.charge_to_code ? chargeToSubsidiary.get(b.charge_to_code) : null);
+      if (sub) s.add(sub);
+    });
+    return Array.from(s).sort();
+  }, [rawBatches, chargeToSubsidiary]);
+
+  // batch_no → batch (已 post 過 badge 用)
+  const batchByNo = useMemo(() => {
+    const m = new Map<string, ClaimBatch>();
+    (rawBatches || []).forEach((b) => { if (b.batch_no) m.set(b.batch_no, b); });
+    return m;
+  }, [rawBatches]);
+
+  // Post to NetSuite — 同卡數 journal 一樣 (unapproved draft JE，externalId 防重複)
+  const handlePostToNetSuite = async () => {
+    if (journalEntries.length === 0) return;
+    const groupCount = new Set(journalEntries.map((e) => e.batch_no)).size;
+    if (!window.confirm(
+      `確定將 ${groupCount} 張 claim journal post 去 NetSuite (unapproved draft)?\n\n已 post 過嘅會自動跳過；成功後張 claim 會標記「已出 Journal」。`
+    )) return;
+    setPosting(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("netsuite-post-claim-journal", {
+        body: { entries: journalEntries },
+      });
+      if (error) throw new Error(error.message || "Edge Function 呼叫失敗");
+      if (data?.error) throw new Error(data.error);
+      const failedList = (data.results || [])
+        .filter((r: any) => r.status === "error")
+        .map((r: any) => `${r.batch_no || r.label}: ${r.error}`)
+        .join("；");
+      toast({
+        title: data.failed > 0 ? "部分完成" : "Post 完成 ✓",
+        description: `新建 ${data.created} 張 JE · ${data.duplicates} 張已 post 過 · ${data.failed} 張失敗${failedList ? ` — ${failedList.slice(0, 400)}` : ""}`,
+        variant: data.failed > 0 ? "destructive" : undefined,
+      });
+      queryClient.invalidateQueries({ queryKey: ["claim-journal-batches"] });
+    } catch (err: any) {
+      toast({ title: "Post 失敗", description: err.message, variant: "destructive" });
+    }
+    setPosting(false);
+  };
 
   // Group by batch for UI display
   const groupedByBatch = useMemo(() => {
@@ -803,16 +855,22 @@ export default function ClaimJournalExport() {
             交通費 + General Claim 自動產生 NetSuite Journal (CR Accounts Payable; Name = employee code 同 sub / IC vendor code 跨 sub)
           </p>
         </div>
-        <Button onClick={handleExport} disabled={journalEntries.length === 0}>
-          <Download className="mr-2 h-4 w-4" />
-          Export CSV
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={handleExport} disabled={journalEntries.length === 0}>
+            <Download className="mr-2 h-4 w-4" />
+            Export CSV
+          </Button>
+          <Button onClick={handlePostToNetSuite} disabled={posting || journalEntries.length === 0} data-testid="button-post-claims-netsuite">
+            {posting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <UploadCloud className="mr-2 h-4 w-4" />}
+            Post to NetSuite
+          </Button>
+        </div>
       </div>
 
       {/* Filters + Reimbursement account */}
       <Card>
         <CardContent className="pt-6">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
             <div>
               <Label className="text-xs">Period</Label>
               <Select value={selectedPeriod} onValueChange={setSelectedPeriod}>
@@ -820,6 +878,16 @@ export default function ClaimJournalExport() {
                 <SelectContent>
                   <SelectItem value="all">All Periods</SelectItem>
                   {periods.map((p) => (<SelectItem key={p} value={p}>{p}</SelectItem>))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs">Subsidiary</Label>
+              <Select value={selectedSub} onValueChange={setSelectedSub}>
+                <SelectTrigger data-testid="select-claim-subsidiary"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Subsidiaries</SelectItem>
+                  {subsidiaryOptions.map((s) => (<SelectItem key={s} value={s}>{s}</SelectItem>))}
                 </SelectContent>
               </Select>
             </div>
@@ -974,6 +1042,11 @@ export default function ClaimJournalExport() {
                     {type === "transportation" ? <Bus className="h-4 w-4 text-blue-600" /> : <Receipt className="h-4 w-4 text-purple-600" />}
                     <span className="font-mono">{batchNo}</span>
                     <span className="text-sm text-muted-foreground">{firstEntry.claimant}</span>
+                    {batchByNo.get(batchNo)?.status === "exported" && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 font-medium whitespace-nowrap">
+                        已 post 過 ✓ {batchByNo.get(batchNo)?.netsuite_journal_no || ""}
+                      </span>
+                    )}
                   </div>
                   <div className="flex items-center gap-2 text-sm">
                     <Badge variant="outline">{entries.length} lines</Badge>
