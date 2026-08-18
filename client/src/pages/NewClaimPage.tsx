@@ -634,7 +634,8 @@ export default function NewClaimPage() {
     ));
   }
 
-  const periodBounds = monthBounds(periodMonth);
+  // 付款申請冇 Period 欄 (發票為本) — 明細日期唔受月份限制
+  const periodBounds = claimType === "payment" ? null : monthBounds(periodMonth);
 
   function addLine() {
     // 加一行 = copy 上一行資料 (收據除外)，同事只需改唔同嘅欄
@@ -1292,35 +1293,45 @@ export default function NewClaimPage() {
             <Label className="text-xs">Nick Name</Label>
             <Input value={nickName} onChange={(e) => setNickName(e.target.value)} data-testid="input-nickname" />
           </div>
-          <div>
-            <Label className="text-xs">Department (HR 分組)</Label>
-            <Select value={department || "__none__"} onValueChange={(v) => setDepartment(v === "__none__" ? "" : v)}>
-              <SelectTrigger data-testid="select-department"><SelectValue placeholder="選擇部門" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="__none__">—</SelectItem>
-                {HR_DEPARTMENTS.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="md:col-span-2 flex items-end">
-            {/* Charge To 已搬落每行明細 (日期同 Project 之間)；公司由第一行推導 */}
-            <div className="text-xs text-muted-foreground pb-2">
-              Charge To 喺下面每行明細度揀 —
-              {chargeToCode && chargeToMap.get(chargeToCode) ? (
-                <> 入賬公司: <span className="font-medium text-foreground">{chargeToMap.get(chargeToCode)?.subsidiary_full_name}</span> (跟第 1 行)</>
-              ) : (
-                <> 第一行揀咗會自動決定入賬公司</>
-              )}
+          {claimType === "payment" ? (
+            /* 付款申請: 第一行 = Claimant / Nick Name / Submit Date，冇第二行 */
+            <div>
+              <Label className="text-xs">Submit Date</Label>
+              <Input type="date" value={submitDate} onChange={(e) => setSubmitDate(e.target.value)} data-testid="input-submit-date" />
             </div>
-          </div>
-          <div>
-            <Label className="text-xs">Period (Month) <span className="text-muted-foreground">(明細日期只可以喺呢個月內)</span></Label>
-            <Input type="month" value={periodMonth} onChange={(e) => handlePeriodChange(e.target.value)} data-testid="input-period" />
-          </div>
-          <div>
-            <Label className="text-xs">Submit Date</Label>
-            <Input type="date" value={submitDate} onChange={(e) => setSubmitDate(e.target.value)} data-testid="input-submit-date" />
-          </div>
+          ) : (
+            <div>
+              <Label className="text-xs">Department (HR 分組)</Label>
+              <Select value={department || "__none__"} onValueChange={(v) => setDepartment(v === "__none__" ? "" : v)}>
+                <SelectTrigger data-testid="select-department"><SelectValue placeholder="選擇部門" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">—</SelectItem>
+                  {HR_DEPARTMENTS.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+          {claimType !== "payment" && <>
+            <div className="md:col-span-2 flex items-end">
+              {/* Charge To 已搬落每行明細 (日期同 Project 之間)；公司由第一行推導 */}
+              <div className="text-xs text-muted-foreground pb-2">
+                Charge To 喺下面每行明細度揀 —
+                {chargeToCode && chargeToMap.get(chargeToCode) ? (
+                  <> 入賬公司: <span className="font-medium text-foreground">{chargeToMap.get(chargeToCode)?.subsidiary_full_name}</span> (跟第 1 行)</>
+                ) : (
+                  <> 第一行揀咗會自動決定入賬公司</>
+                )}
+              </div>
+            </div>
+            <div>
+              <Label className="text-xs">Period (Month) <span className="text-muted-foreground">(明細日期只可以喺呢個月內)</span></Label>
+              <Input type="month" value={periodMonth} onChange={(e) => handlePeriodChange(e.target.value)} data-testid="input-period" />
+            </div>
+            <div>
+              <Label className="text-xs">Submit Date</Label>
+              <Input type="date" value={submitDate} onChange={(e) => setSubmitDate(e.target.value)} data-testid="input-submit-date" />
+            </div>
+          </>}
         </div>
       </CardContent></Card>
 
@@ -1377,44 +1388,6 @@ export default function NewClaimPage() {
               ))}
             </div>
             <div>
-              <Label className="text-xs">類型 (由入口決定)</Label>
-              <div className="h-9 flex items-center px-3 rounded-md border border-border bg-muted/30 text-sm" data-testid="payee-type-fixed">
-                {payeeType === "freelancer" ? "Freelancer 自由工作者" : "Supplier 供應商"}
-              </div>
-            </div>
-            <div>
-              <Label className="text-xs">付款方式</Label>
-              <Select value={paymentMethod} onValueChange={setPaymentMethod}>
-                <SelectTrigger data-testid="select-payment-method"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {PAYMENT_METHODS.map(m => <SelectItem key={m.code} value={m.code}>{m.label}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-            {paymentMethod === "fps" ? (
-              <div>
-                <Label className="text-xs">FPS ID / 電話</Label>
-                <Input value={payeeFpsId} onChange={(e) => setPayeeFpsId(e.target.value)} data-testid="input-payee-fps" />
-              </div>
-            ) : (
-              <>
-                <div>
-                  <Label className="text-xs">銀行</Label>
-                  <Input value={payeeBank} onChange={(e) => setPayeeBank(e.target.value)}
-                    placeholder="e.g. HSBC / Hang Seng" data-testid="input-payee-bank" />
-                </div>
-                <div>
-                  <Label className="text-xs">戶口號碼</Label>
-                  <Input value={payeeBankAccount} onChange={(e) => setPayeeBankAccount(e.target.value)} data-testid="input-payee-account" />
-                </div>
-              </>
-            )}
-            <div>
-              <Label className="text-xs">戶口名稱</Label>
-              <Input value={payeeAccountName} onChange={(e) => setPayeeAccountName(e.target.value)}
-                placeholder="同銀行紀錄一致" data-testid="input-payee-account-name" />
-            </div>
-            <div>
               <Label className="text-xs">供應商發票號 * <span className="text-muted-foreground">(同一供應商不可重複)</span></Label>
               <Input value={supplierInvoiceNo} onChange={(e) => setSupplierInvoiceNo(e.target.value)} data-testid="input-supplier-invoice" />
               <div className="text-[10px] text-muted-foreground mt-0.5">
@@ -1424,15 +1397,6 @@ export default function NewClaimPage() {
             <div>
               <Label className="text-xs">發票日期 *</Label>
               <Input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} data-testid="input-invoice-date" />
-            </div>
-            <div>
-              <Label className="text-xs">付款條款 *</Label>
-              <Select value={paymentTerms || undefined} onValueChange={setPaymentTerms}>
-                <SelectTrigger data-testid="select-payment-terms"><SelectValue placeholder="揀…" /></SelectTrigger>
-                <SelectContent>
-                  {PAYMENT_TERMS.map(t => <SelectItem key={t.code} value={t.code}>{t.label}</SelectItem>)}
-                </SelectContent>
-              </Select>
             </div>
             <div>
               <Label className="text-xs">發票總額 *</Label>
@@ -1452,6 +1416,15 @@ export default function NewClaimPage() {
             <div>
               <Label className="text-xs">付款到期日</Label>
               <Input type="date" value={paymentDueDate} onChange={(e) => setPaymentDueDate(e.target.value)} data-testid="input-payment-due" />
+            </div>
+            <div>
+              <Label className="text-xs">付款條款 *</Label>
+              <Select value={paymentTerms || undefined} onValueChange={setPaymentTerms}>
+                <SelectTrigger data-testid="select-payment-terms"><SelectValue placeholder="揀…" /></SelectTrigger>
+                <SelectContent>
+                  {PAYMENT_TERMS.map(t => <SelectItem key={t.code} value={t.code}>{t.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
             </div>
             <div className="flex items-end pb-1">
               <label className="flex items-center gap-2 text-sm cursor-pointer">
@@ -1883,6 +1856,47 @@ export default function NewClaimPage() {
           </div>
         )}
       </CardContent></Card>
+
+      {/* 付款資料 (payment only) — 付款方式 + 銀行/FPS 收款資料，放喺附件下方 */}
+      {claimType === "payment" && (
+        <Card><CardContent className="p-4 space-y-3">
+          <div className="text-sm font-medium">付款資料 (Payment Details)</div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div>
+              <Label className="text-xs">付款方式</Label>
+              <Select value={paymentMethod} onValueChange={setPaymentMethod}>
+                <SelectTrigger data-testid="select-payment-method"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {PAYMENT_METHODS.map(m => <SelectItem key={m.code} value={m.code}>{m.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            {paymentMethod === "fps" ? (
+              <div>
+                <Label className="text-xs">FPS ID / 電話</Label>
+                <Input value={payeeFpsId} onChange={(e) => setPayeeFpsId(e.target.value)} data-testid="input-payee-fps" />
+              </div>
+            ) : (
+              <>
+                <div>
+                  <Label className="text-xs">銀行</Label>
+                  <Input value={payeeBank} onChange={(e) => setPayeeBank(e.target.value)}
+                    placeholder="e.g. HSBC / Hang Seng" data-testid="input-payee-bank" />
+                </div>
+                <div>
+                  <Label className="text-xs">戶口號碼</Label>
+                  <Input value={payeeBankAccount} onChange={(e) => setPayeeBankAccount(e.target.value)} data-testid="input-payee-account" />
+                </div>
+              </>
+            )}
+            <div>
+              <Label className="text-xs">戶口名稱</Label>
+              <Input value={payeeAccountName} onChange={(e) => setPayeeAccountName(e.target.value)}
+                placeholder="同銀行紀錄一致" data-testid="input-payee-account-name" />
+            </div>
+          </div>
+        </CardContent></Card>
+      )}
 
       {/* Actions */}
       <div className="flex items-center justify-end gap-2 sticky bottom-0 bg-background/80 backdrop-blur py-3">
