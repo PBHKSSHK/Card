@@ -1402,6 +1402,9 @@ export default function NewClaimPage() {
             <div>
               <Label className="text-xs">供應商發票號 * <span className="text-muted-foreground">(同一供應商不可重複)</span></Label>
               <Input value={supplierInvoiceNo} onChange={(e) => setSupplierInvoiceNo(e.target.value)} data-testid="input-supplier-invoice" />
+              <div className="text-[10px] text-muted-foreground mt-0.5">
+                一張申請只認一張發票 — 同一供應商有多張發票，請分開多次申請
+              </div>
             </div>
             <div>
               <Label className="text-xs">發票日期 *</Label>
@@ -1526,7 +1529,7 @@ export default function NewClaimPage() {
                 </>}
                 <th className="px-2 py-2 text-right">HKD 金額</th>
                 {claimType !== "transportation" && <th className="px-2 py-2 text-right">Billable</th>}
-                <th className="px-2 py-2 text-center w-[140px]">收據 (可多張)</th>
+                {claimType !== "payment" && <th className="px-2 py-2 text-center w-[140px]">收據 (可多張)</th>}
                 <th className="px-2 py-2 w-8"></th>
               </tr>
             </thead>
@@ -1717,6 +1720,8 @@ export default function NewClaimPage() {
                   {claimType !== "transportation" && (
                     <td className="px-2 py-2"><Input type="number" step="0.01" value={l.billable_to_client_hkd} onChange={(e) => updateLine(l._key, { billable_to_client_hkd: e.target.value })} className="h-7 text-xs text-right w-[90px]" /></td>
                   )}
+                  {/* 付款申請一張申請只認一張發票 — 冇明細行收據，發票/supporting docs 用下面附件區 */}
+                  {claimType !== "payment" && (
                   <td className="px-2 py-2 text-center">
                     <div className="flex flex-col items-center gap-1">
                       <label htmlFor={`line-receipt-${l._key}`} className="inline-flex cursor-pointer">
@@ -1768,6 +1773,7 @@ export default function NewClaimPage() {
                       )}
                     </div>
                   </td>
+                  )}
                   <td className="px-2 py-2 text-center">
                     {lines.length > 1 && (
                       <Button size="icon" variant="ghost" onClick={() => removeLine(l._key)} className="h-6 w-6">
@@ -1784,7 +1790,7 @@ export default function NewClaimPage() {
                 <td className="px-2 py-2 text-right tabular-nums">
                   HK${totalHkd.toFixed(2)}
                 </td>
-                <td colSpan={claimType !== "transportation" ? 3 : 2}></td>
+                <td colSpan={claimType === "payment" ? 2 : claimType !== "transportation" ? 3 : 2}></td>
               </tr>
             </tfoot>
           </table>
@@ -1793,11 +1799,17 @@ export default function NewClaimPage() {
 
       {/* Attachments — batch 級 (cover sheet 或統一上傳) */}
       <Card><CardContent className="p-4 space-y-3">
-        <div className="text-sm font-medium">以上是 Cover Sheet / 整包收據附件 <span className="text-xs text-muted-foreground font-normal">(如需個別行有收據，請在表格上面「收據」那 column 上載)</span></div>
+        <div className="text-sm font-medium">
+          {claimType === "payment" ? (
+            <>發票 + Supporting Documents <span className="text-xs text-muted-foreground font-normal">(發票影像、報價單、合約、收據等 — 可上載多個檔案)</span></>
+          ) : (
+            <>以上是 Cover Sheet / 整包收據附件 <span className="text-xs text-muted-foreground font-normal">(如需個別行有收據，請在表格上面「收據」那 column 上載)</span></>
+          )}
+        </div>
         <div>
           <label htmlFor="claim-file-upload" className="inline-flex">
             <Button asChild variant="outline" size="sm">
-              <span><Upload size={14} className="mr-1" /> 上載 Cover / 附件 (PDF / 圖片)</span>
+              <span><Upload size={14} className="mr-1" /> {claimType === "payment" ? "上載發票 / Supporting Documents (PDF / 圖片)" : "上載 Cover / 附件 (PDF / 圖片)"}</span>
             </Button>
           </label>
           <input
