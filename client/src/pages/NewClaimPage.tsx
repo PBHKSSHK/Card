@@ -647,6 +647,68 @@ export default function NewClaimPage() {
           return;
         }
       }
+      // Claim Forms 限制 (payment 唔受限)：60 天 + 防重複申報
+      // (DB trigger 都會擋 — 呢度係俾同事清楚提示)
+      if (claimType !== "payment") {
+        const cutoff = (() => {
+          const d = new Date(`${submitDate}T00:00:00`);
+          d.setDate(d.getDate() - 60);
+          return d.toISOString().slice(0, 10);
+        })();
+        const amtLines = lines.filter(l => l.hkd_amount && parseFloat(l.hkd_amount) > 0 && l.line_date);
+        const tooOld = amtLines.filter(l => l.line_date < cutoff);
+        if (tooOld.length > 0) {
+          toast({
+            title: "超過 60 天不可申報",
+            description: `第 ${tooOld.map(l => l.item_no).join(", ")} 行日期早過 ${cutoff}（由 submit date 向前計 60 天）`,
+            variant: "destructive",
+          });
+          return;
+        }
+        // 同一張表入面唔可以有重複行 (同日期+金額+描述)
+        const seen = new Map<string, number>();
+        for (const l of amtLines) {
+          const key = `${l.line_date}|${parseFloat(l.hkd_amount!)}|${(l.description || "").trim().toLowerCase()}`;
+          const prev = seen.get(key);
+          if (prev != null) {
+            toast({
+              title: "重複明細",
+              description: `第 ${prev} 同 ${l.item_no} 行係同日期+金額+描述，唔可以重複申報`,
+              variant: "destructive",
+            });
+            return;
+          }
+          seen.set(key, l.item_no);
+        }
+        // 同一員工其他 claim (未被退回) 已申報過同日期+金額+描述
+        const effClaimant = isSuperUser ? (claimantUserId || session.user.id) : session.user.id;
+        const dates = [...new Set(amtLines.map(l => l.line_date))];
+        if (dates.length > 0) {
+          const { data: existing } = await supabase
+            .from("claim_lines")
+            .select("line_date, hkd_amount, description, line_status, batch_id, claim_batches!inner(claimant_user_id, status, batch_no, claim_type)")
+            .in("line_date", dates)
+            .eq("claim_batches.claimant_user_id", effClaimant)
+            .neq("claim_batches.status", "rejected")
+            .in("claim_batches.claim_type", ["expenses", "transportation"]);
+          for (const l of amtLines) {
+            const hit: any = (existing || []).find((e: any) =>
+              e.batch_id !== editId &&
+              e.line_status !== "rejected" &&
+              e.line_date === l.line_date &&
+              Number(e.hkd_amount) === parseFloat(l.hkd_amount!) &&
+              String(e.description || "").trim().toLowerCase() === (l.description || "").trim().toLowerCase());
+            if (hit) {
+              toast({
+                title: "重複申報",
+                description: `第 ${l.item_no} 行同 ${hit.claim_batches?.batch_no || "另一張 claim"} 已有嘅明細相同（同日期+金額+描述）`,
+                variant: "destructive",
+              });
+              return;
+            }
+          }
+        }
+      }
     }
 
     setSaving(true);
