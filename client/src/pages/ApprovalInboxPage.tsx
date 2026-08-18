@@ -600,6 +600,7 @@ export default function ApprovalInboxPage() {
                               </div>
                             )}
                             {l.project_code && <div className="text-[10px] font-mono text-muted-foreground">P: {l.project_code}</div>}
+                            {l.line_charge_to && <div className="text-[10px] font-mono text-muted-foreground">CT: {l.line_charge_to}</div>}
                           </div>
                           <div className="col-span-2 text-right">
                             <div className={`tabular-nums font-medium ${lineStatus === "rejected" ? "line-through text-muted-foreground" : ""}`}>

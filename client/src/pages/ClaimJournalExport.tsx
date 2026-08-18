@@ -48,6 +48,7 @@ interface ClaimBatch {
 interface ClaimLine {
   id: string;
   batch_id: string;
+  line_charge_to?: string | null;
   item_no: number;
   line_date: string | null;
   project_code: string | null;
@@ -608,6 +609,10 @@ export default function ClaimJournalExport() {
         // a positive Credit instead; the CR Accounts-Payable total already nets
         // signed amounts, so the entry stays balanced with no negative cell.
         const isNegative = amt < 0;
+        // 明細行有自己嘅 Charge To → DR 行用行嘅 department (拆部門申報)
+        const lineDept = l.line_charge_to
+          ? (chargeToDeptName.get(l.line_charge_to) || payerDept)
+          : payerDept;
         drLines.push({
           entry_no: entryNo,
           date: journalDate,
@@ -617,7 +622,7 @@ export default function ClaimJournalExport() {
           credit: isNegative ? Math.abs(amt) : null,
           memo,
           subsidiary: payerSubsidiary,
-          department: payerDept,
+          department: lineDept,
           class_project: projLabel,
           name: employeeNameField,
           is_credit_line: false,

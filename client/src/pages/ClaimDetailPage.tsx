@@ -803,7 +803,10 @@ export default function ClaimDetailPage() {
                 <tr key={l.id} className={lineRowClass}>
                   <td className="px-3 py-2 tabular-nums">{l.item_no}</td>
                   <td className="px-3 py-2 tabular-nums">{l.line_date}</td>
-                  <td className="px-3 py-2 font-mono">{l.project_code || "—"}</td>
+                  <td className="px-3 py-2 font-mono">
+                    {l.project_code || "—"}
+                    {l.line_charge_to && <div className="text-[10px] text-muted-foreground">{l.line_charge_to}</div>}
+                  </td>
                   {claimType !== "transportation" && <td className="px-3 py-2">{l.client_name || "—"}</td>}
                   {claimType === "transportation" && <>
                     <td className="px-3 py-2">

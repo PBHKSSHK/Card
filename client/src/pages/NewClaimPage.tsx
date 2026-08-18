@@ -152,6 +152,7 @@ function makeBlankLine(itemNo: number, type: ClaimType, period?: string): LineFo
     means_of_transport: "TAXI", taxi_reason: "",
     hkd_amount: "",
     expense_category_code: "staff_transport",
+    line_charge_to: "",
   };
 }
 
@@ -195,7 +196,8 @@ export default function NewClaimPage() {
   const [fullName, setFullName] = useState(profile?.full_name || profile?.email || session?.user?.email || "");
   const [nickName, setNickName] = useState("");
   const [department, setDepartment] = useState("");
-  const [chargeToCode, setChargeToCode] = useState("");
+  // Charge To 已搬落明細行 (每行自己揀) — 表頭唔再有選單。
+  // 批號公司 / 審批路由 / journal payer 由「第一行有 Charge To 嘅行」推導。
   const [periodMonth, setPeriodMonth] = useState(currentMonthHK());  // HK-local (fix #4)
   const [submitDate, setSubmitDate] = useState(todayHK());  // HK-local (fix #4)
 
@@ -314,7 +316,7 @@ export default function NewClaimPage() {
         setFullName(batch.full_name || "");
         setNickName(batch.nick_name || "");
         setDepartment(batch.department || "");
-        setChargeToCode(batch.charge_to_code || "");
+        const batchChargeTo = batch.charge_to_code || "";
         setPeriodMonth(batch.period_month || currentMonthHK());  // HK-local fallback (fix #4)
         setSubmitDate(batch.submit_date || todayHK());  // HK-local fallback (fix #4)
         setClaimantUserId(batch.claimant_user_id || myUid || "");
@@ -362,7 +364,8 @@ export default function NewClaimPage() {
             hkd_amount: l.hkd_amount != null ? String(l.hkd_amount) : "",
             billable_to_client_hkd: l.billable_to_client_hkd != null ? String(l.billable_to_client_hkd) : "0",
             expense_category_code: l.expense_category_code || "",
-            line_charge_to: l.line_charge_to || "",
+            // 舊單 (charge to 喺表頭年代) — 每行backfill返表頭值
+            line_charge_to: l.line_charge_to || batchChargeTo || "",
             means_of_transport: l.means_of_transport || "TAXI",
             taxi_reason: l.taxi_reason || "",
             // attach DB id so we can map back line-level attachments
@@ -473,11 +476,15 @@ export default function NewClaimPage() {
     },
   });
 
-  // 揀完 charge_to 之後，根據 entity_code filter projects
-  const currentEntity = chargeToCode ? chargeToMap.get(chargeToCode)?.entity_code : null;
-  const filteredProjectCodes = useMemo(() => {
-    if (!currentEntity) return [] as any[];
-    const prefixes = ENTITY_TO_PROJECT_PREFIXES[currentEntity];
+  // 表頭 charge_to = 第一行有揀嘅行 (batch 級用途: 批號公司 / 審批路由 / journal payer)
+  const chargeToCode = lines.find(l => (l.line_charge_to || "").trim())?.line_charge_to || "";
+
+  // 每行根據自己嘅 Charge To entity filter projects
+  const entityForChargeTo = (ct?: string) => (ct ? chargeToMap.get(ct)?.entity_code : null);
+  const projectsForChargeTo = (ct?: string) => {
+    const entity = entityForChargeTo(ct);
+    if (!entity) return [] as any[];
+    const prefixes = ENTITY_TO_PROJECT_PREFIXES[entity];
     if (!prefixes || prefixes.length === 0) return [];
     return projectCodes.filter((p: any) => {
       if (!p.charge_to) return false;
@@ -486,7 +493,7 @@ export default function NewClaimPage() {
         p.charge_to === prefix || p.charge_to.startsWith(prefix + "-") || p.charge_to.startsWith(prefix)
       );
     });
-  }, [projectCodes, currentEntity]);
+  };
 
   // Expense categories — settings 入面嘅 mapping (同 credit card recon 用同一張表)
   const { data: expenseCategoriesRaw = [] } = useQuery({
@@ -630,7 +637,20 @@ export default function NewClaimPage() {
   const periodBounds = monthBounds(periodMonth);
 
   function addLine() {
-    setLines(prev => [...prev, makeBlankLine(prev.length + 1, claimType, periodMonth)]);
+    // 加一行 = copy 上一行資料 (收據除外)，同事只需改唔同嘅欄
+    setLines(prev => {
+      const blank = makeBlankLine(prev.length + 1, claimType, periodMonth);
+      const src = prev[prev.length - 1];
+      if (!src) return [...prev, blank];
+      const copy: LineForm = {
+        ...src,
+        _key: blank._key,
+        item_no: prev.length + 1,
+        receipts: [],
+      };
+      delete (copy as any)._existing_line_id;
+      return [...prev, copy];
+    });
   }
 
   function removeLine(key: string) {
@@ -723,10 +743,18 @@ export default function NewClaimPage() {
 
   async function doSave(asSubmit: boolean) {
     if (!session?.user?.id) return;
-    // Draft 可以唔填 charge_to_code / full_name；submit 先要 enforce
+    // Draft 可以唔填 charge_to / full_name；submit 先要 enforce
     if (asSubmit) {
-      if (!chargeToCode) {
-        toast({ title: "缺少 Charge To", description: "請選擇 charge to code", variant: "destructive" });
+      // 每行有金額嘅明細都要有自己嘅 Charge To (第 1 行兼決定批號公司/審批路由)
+      const noCt = lines.filter(l => l.hkd_amount && parseFloat(l.hkd_amount) > 0 && !(l.line_charge_to || "").trim());
+      if (noCt.length > 0 || !chargeToCode) {
+        toast({
+          title: "缺少 Charge To",
+          description: noCt.length > 0
+            ? `第 ${noCt.map(l => l.item_no).join(", ")} 行未揀 Charge To`
+            : "請喺明細行揀 Charge To",
+          variant: "destructive",
+        });
         return;
       }
       if (!fullName) {
@@ -1023,7 +1051,7 @@ export default function NewClaimPage() {
         hkd_amount: l.hkd_amount ? parseFloat(l.hkd_amount) : 0,
         billable_to_client_hkd: l.billable_to_client_hkd ? parseFloat(l.billable_to_client_hkd) : 0,
         expense_category_code: l.expense_category_code || null,
-        line_charge_to: claimType === "payment" ? (l.line_charge_to || null) : null,
+        line_charge_to: l.line_charge_to || null,
         // transport — location_from / destination 已棄用，留 NULL 兼容舊 schema
         means_of_transport: l.means_of_transport || null,
         taxi_reason: l.taxi_reason || null,
@@ -1274,29 +1302,16 @@ export default function NewClaimPage() {
               </SelectContent>
             </Select>
           </div>
-          <div className="md:col-span-2">
-            <Label className="text-xs">Charge To Code * <span className="text-muted-foreground">(自動 derive entity / subsidiary)</span></Label>
-            <Select value={chargeToCode} onValueChange={setChargeToCode}>
-              <SelectTrigger data-testid="select-charge-to"><SelectValue placeholder="選擇 Charge To" /></SelectTrigger>
-              <SelectContent className="max-h-[400px]">
-                {chargeToOptions.map(({ entity, items }) => (
-                  <div key={entity}>
-                    <div className="sticky top-0 bg-muted/60 px-2 py-1 text-[10px] font-bold uppercase text-muted-foreground">{entity}</div>
-                    {items.map((d: any) => (
-                      <SelectItem key={d.charge_to} value={d.charge_to}>
-                        <span className="font-mono text-xs">{d.charge_to}</span>
-                        <span className="ml-2 text-muted-foreground">{d.name}</span>
-                      </SelectItem>
-                    ))}
-                  </div>
-                ))}
-              </SelectContent>
-            </Select>
-            {chargeToCode && chargeToMap.get(chargeToCode) && (
-              <div className="text-xs text-muted-foreground mt-1">
-                → {chargeToMap.get(chargeToCode)?.subsidiary_full_name} · {chargeToMap.get(chargeToCode)?.name}
-              </div>
-            )}
+          <div className="md:col-span-2 flex items-end">
+            {/* Charge To 已搬落每行明細 (日期同 Project 之間)；公司由第一行推導 */}
+            <div className="text-xs text-muted-foreground pb-2">
+              Charge To 喺下面每行明細度揀 —
+              {chargeToCode && chargeToMap.get(chargeToCode) ? (
+                <> 入賬公司: <span className="font-medium text-foreground">{chargeToMap.get(chargeToCode)?.subsidiary_full_name}</span> (跟第 1 行)</>
+              ) : (
+                <> 第一行揀咗會自動決定入賬公司</>
+              )}
+            </div>
           </div>
           <div>
             <Label className="text-xs">Period (Month) <span className="text-muted-foreground">(明細日期只可以喺呢個月內)</span></Label>
@@ -1513,9 +1528,8 @@ export default function NewClaimPage() {
               <tr>
                 <th className="px-2 py-2 text-left w-12">#</th>
                 <th className="px-2 py-2 text-left">日期</th>
+                <th className="px-2 py-2 text-left">Charge To *</th>
                 <th className="px-2 py-2 text-left">Project</th>
-                {claimType === "payment" && <th className="px-2 py-2 text-left">部門 (Charge To)</th>}
-                {claimType !== "transportation" && <th className="px-2 py-2 text-left">Client</th>}
                 {claimType === "transportation" && <>
                   <th className="px-2 py-2 text-left">交通工具</th>
                   <th className="px-2 py-2 text-left">類別</th>
@@ -1548,6 +1562,39 @@ export default function NewClaimPage() {
                       }
                     }}
                     className="h-7 text-xs" /></td>
+                  {/* 每行自己嘅 Charge To — 決定條數入邊個部門/公司 (第 1 行兼定批號公司) */}
+                  <td className="px-2 py-2">
+                    <Select
+                      value={l.line_charge_to || "__none__"}
+                      onValueChange={(v) => {
+                        const ct = v === "__none__" ? "" : v;
+                        const patch: Partial<LineForm> = { line_charge_to: ct };
+                        // 轉咗公司 → project 清走 (project 係跟 entity filter 嘅)
+                        if (l.project_code && entityForChargeTo(ct) !== entityForChargeTo(l.line_charge_to)) {
+                          patch.project_code = "";
+                        }
+                        updateLine(l._key, patch);
+                      }}
+                    >
+                      <SelectTrigger className="h-7 text-xs min-w-[130px]">
+                        <SelectValue placeholder="揀 Charge To" />
+                      </SelectTrigger>
+                      <SelectContent className="max-h-[400px]">
+                        <SelectItem value="__none__">—</SelectItem>
+                        {chargeToOptions.map(({ entity, items }) => (
+                          <div key={entity}>
+                            <div className="sticky top-0 bg-muted/60 px-2 py-1 text-[10px] font-bold uppercase text-muted-foreground">{entity}</div>
+                            {items.map((d: any) => (
+                              <SelectItem key={d.charge_to} value={d.charge_to}>
+                                <span className="font-mono text-[10px]">{d.charge_to}</span>
+                                <span className="ml-1 text-muted-foreground">{d.name}</span>
+                              </SelectItem>
+                            ))}
+                          </div>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </td>
                   <td className="px-2 py-2">
                     <Select
                       value={l.project_code || "__none__"}
@@ -1564,19 +1611,19 @@ export default function NewClaimPage() {
                         }
                         updateLine(l._key, patch);
                       }}
-                      disabled={!chargeToCode}
+                      disabled={!l.line_charge_to}
                     >
                       <SelectTrigger className="h-7 text-xs min-w-[140px]">
-                        <SelectValue placeholder={chargeToCode ? "—" : "請先揀 Charge To"} />
+                        <SelectValue placeholder={l.line_charge_to ? "—" : "先揀 Charge To"} />
                       </SelectTrigger>
                       <SelectContent className="max-h-[400px]">
                         <SelectItem value="__none__">—</SelectItem>
-                        {filteredProjectCodes.length === 0 && chargeToCode && (
+                        {projectsForChargeTo(l.line_charge_to).length === 0 && l.line_charge_to && (
                           <div className="px-2 py-1 text-[10px] text-muted-foreground">
-                            {currentEntity} 沒有可選 project
+                            {entityForChargeTo(l.line_charge_to)} 沒有可選 project
                           </div>
                         )}
-                        {filteredProjectCodes.map((p: any) => (
+                        {projectsForChargeTo(l.line_charge_to).map((p: any) => (
                           <SelectItem key={p.id || p.project_id} value={p.project_id}>
                             <span className="font-mono text-[10px] mr-1">{p.project_id}</span>
                             <span className="text-muted-foreground">{p.project_name}</span>
@@ -1585,43 +1632,6 @@ export default function NewClaimPage() {
                       </SelectContent>
                     </Select>
                   </td>
-                  {claimType === "payment" && (
-                    <td className="px-2 py-2">
-                      {/* 一張發票拆多個 department — 空 = 跟表頭 Charge To */}
-                      <Select
-                        value={l.line_charge_to || "__hdr__"}
-                        onValueChange={(v) => updateLine(l._key, { line_charge_to: v === "__hdr__" ? "" : v })}
-                      >
-                        <SelectTrigger className="h-7 text-xs min-w-[130px]">
-                          <SelectValue placeholder="跟表頭" />
-                        </SelectTrigger>
-                        <SelectContent className="max-h-[400px]">
-                          <SelectItem value="__hdr__">跟表頭 ({chargeToCode || "未揀"})</SelectItem>
-                          {chargeToOptions.map(({ entity, items }) => (
-                            <div key={entity}>
-                              <div className="sticky top-0 bg-muted/60 px-2 py-1 text-[10px] font-bold uppercase text-muted-foreground">{entity}</div>
-                              {items.map((d: any) => (
-                                <SelectItem key={d.charge_to} value={d.charge_to}>
-                                  <span className="font-mono text-[10px]">{d.charge_to}</span>
-                                  <span className="ml-1 text-muted-foreground">{d.name}</span>
-                                </SelectItem>
-                              ))}
-                            </div>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </td>
-                  )}
-                  {claimType !== "transportation" && (
-                    <td className="px-2 py-2">
-                      <Input
-                        value={l.client_name || ""}
-                        onChange={(e) => updateLine(l._key, { client_name: e.target.value })}
-                        className="h-7 text-xs min-w-[180px]"
-                        placeholder="客戶名"
-                      />
-                    </td>
-                  )}
                   {claimType === "transportation" && <>
                     <td className="px-2 py-2">
                       <Select value={l.means_of_transport} onValueChange={(v) => updateLine(l._key, { means_of_transport: v })}>
@@ -1786,7 +1796,7 @@ export default function NewClaimPage() {
             </tbody>
             <tfoot>
               <tr className="border-t-2 border-border font-medium">
-                <td colSpan={claimType === "transportation" ? 6 : claimType === "payment" ? 12 : 11} className="px-2 py-2 text-right">TOTAL</td>
+                <td colSpan={claimType === "transportation" ? 7 : 9} className="px-2 py-2 text-right">TOTAL</td>
                 <td className="px-2 py-2 text-right tabular-nums">
                   HK${totalHkd.toFixed(2)}
                 </td>
