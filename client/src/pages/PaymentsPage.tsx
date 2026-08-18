@@ -43,6 +43,10 @@ interface PaymentBatch {
   payment_method: string | null;
   payment_due_date: string | null;
   supplier_invoice_no: string | null;
+  invoice_date: string | null;
+  invoice_amount: number | null;
+  invoice_currency: string | null;
+  is_prepayment: boolean;
   submit_date: string | null;
   period_month: string | null;
   charge_to_code: string;
@@ -140,11 +144,31 @@ export default function PaymentsPage() {
     };
   }, [payments]);
 
-  // 已批核、未入 NetSuite 嘅批次 — Bills post 候選
+  // 已批核、未入 NetSuite 嘅批次 — Bills post 候選 (預付款另外處理)
   const readyBatches = useMemo(
-    () => (payments || []).filter(c => c.status === "approved"),
+    () => (payments || []).filter(c => c.status === "approved" && !c.is_prepayment),
     [payments],
   );
+  // 已批核嘅預付款 — 唔開 bill，NetSuite 用 Vendor Prepayment 手動入，之後標記
+  const prepayReady = useMemo(
+    () => (payments || []).filter(c => c.status === "approved" && c.is_prepayment),
+    [payments],
+  );
+
+  const markPrepaymentDone = async (b: PaymentBatch) => {
+    if (!window.confirm(`確認已喺 NetSuite 用 Vendor Prepayment 入咗「${b.batch_no} · ${b.payee_name}」?\n\n張單會標記做「已入 NetSuite」。`)) return;
+    const { data: updated, error } = await supabase.from("claim_batches").update({
+      status: "exported",
+      netsuite_journal_no: "PREPAYMENT (手動入)",
+      exported_at: new Date().toISOString(),
+    }).eq("id", b.id).eq("status", "approved").select();
+    if (error || !updated?.length) {
+      toast({ title: "標記失敗", description: error?.message || "狀態已變，請重新整理", variant: "destructive" });
+      return;
+    }
+    toast({ title: "已標記 ✓", description: `${b.batch_no} 已當作入咗 NetSuite (Vendor Prepayment)` });
+    qc.invalidateQueries({ queryKey: ["payment-batches"] });
+  };
 
   const toggleSelect = (id: string, on: boolean) => {
     setSelectedIds(prev => {
@@ -304,6 +328,35 @@ export default function PaymentsPage() {
         </Card>
       )}
 
+      {/* 預付款 — 唔開 bill，NetSuite Vendor Prepayment 手動入數後標記 */}
+      {isSuperUser && prepayReady.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium">預付款 / 按金 — {prepayReady.length} 張已批核 (唔會自動開 bill)</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-1">
+            <div className="text-[11px] text-muted-foreground">
+              請喺 NetSuite 用 <b>Vendor Prepayment</b>（或先入預付科目）入數，之後返嚟撳「標記已入數」；收到正式發票時喺 NetSuite 對沖。
+            </div>
+            {prepayReady.map(b => (
+              <div key={b.id} className="flex items-center gap-2 text-xs px-1 py-1 rounded hover:bg-muted/40">
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-700 dark:text-purple-400 font-medium">預付</span>
+                <span className="font-mono">{b.batch_no}</span>
+                <span className="font-medium">{b.payee_name}</span>
+                {b.supplier_invoice_no && <span className="text-muted-foreground">INV: {b.supplier_invoice_no}</span>}
+                <span className="ml-auto tabular-nums font-medium">
+                  HK${Number(b.approved_total_hkd ?? b.total_hkd ?? 0).toFixed(2)}
+                </span>
+                <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]"
+                  onClick={() => markPrepaymentDone(b)} data-testid={`button-mark-prepay-${b.batch_no}`}>
+                  標記已入數
+                </Button>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
       {/* Filters */}
       <Card><CardContent className="p-4">
         <div className="flex items-center gap-3 flex-wrap">
@@ -378,13 +431,21 @@ export default function PaymentsPage() {
                     <tr key={c.id} className="border-b border-border/40 hover:bg-muted/20" data-testid={`row-payment-${c.batch_no}`}>
                       <td className="px-4 py-3 text-sm font-mono">{c.batch_no || "—"}</td>
                       <td className="px-3 py-3 text-sm">
-                        <div className="font-medium">{c.payee_name || "—"}</div>
+                        <div className="font-medium">
+                          {c.payee_name || "—"}
+                          {c.is_prepayment && (
+                            <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-700 dark:text-purple-400 font-medium">預付</span>
+                          )}
+                        </div>
                         <div className="text-xs text-muted-foreground">
                           {c.payee_type === "freelancer" ? "Freelancer" : c.payee_type === "supplier" ? "Supplier" : ""}
                           {c.payment_method ? ` · ${METHOD_LABELS[c.payment_method] || c.payment_method}` : ""}
                         </div>
                       </td>
-                      <td className="px-3 py-3 text-xs font-mono">{c.supplier_invoice_no || "—"}</td>
+                      <td className="px-3 py-3 text-xs font-mono">
+                        {c.supplier_invoice_no || "—"}
+                        {c.invoice_date && <div className="text-muted-foreground">{c.invoice_date}</div>}
+                      </td>
                       <td className="px-3 py-3 text-sm">{c.nick_name || c.full_name || "—"}</td>
                       <td className="px-3 py-3 text-xs">
                         <div className="font-mono">{c.charge_to_code}</div>

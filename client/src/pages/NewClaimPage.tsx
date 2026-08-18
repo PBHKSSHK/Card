@@ -7,6 +7,7 @@ import { useRoute, useLocation } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/auth";
+import { parseDocument } from "@/lib/document-parser";
 import { todayHK, currentMonthHK } from "@/lib/hkdate";
 import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent } from "@/components/ui/card";
@@ -23,6 +24,16 @@ import {
 } from "lucide-react";
 
 type ClaimType = "expenses" | "transportation" | "payment";
+
+const PAYMENT_TERMS = [
+  { code: "due_on_receipt", label: "即時付款 (Due on receipt)" },
+  { code: "net7", label: "Net 7" },
+  { code: "net14", label: "Net 14" },
+  { code: "net30", label: "Net 30" },
+  { code: "net60", label: "Net 60" },
+  { code: "monthly", label: "月結" },
+  { code: "other", label: "其他" },
+];
 
 const PAYMENT_METHODS = [
   { code: "bank_transfer", label: "銀行轉賬" },
@@ -90,6 +101,8 @@ interface LineForm {
   hkd_amount?: string;
   billable_to_client_hkd?: string;
   expense_category_code?: string;
+  // payment — 一張發票拆多個 department (空 = 跟表頭 Charge To)
+  line_charge_to?: string;
   // transport
   means_of_transport?: string;
   taxi_reason?: string;
@@ -129,6 +142,7 @@ function makeBlankLine(itemNo: number, type: ClaimType, period?: string): LineFo
       client_name: "", currency: "HKD",
       original_amount: "", fx_rate: "1", hkd_amount: "",
       billable_to_client_hkd: "0", expense_category_code: "",
+      line_charge_to: "",
     };
   }
   return {
@@ -197,6 +211,13 @@ export default function NewClaimPage() {
   const [payeeAddress, setPayeeAddress] = useState("");
   const [payeeGender, setPayeeGender] = useState("");
   const [payeePhone, setPayeePhone] = useState("");
+  // 發票欄位 (payment 必填)
+  const [invoiceDate, setInvoiceDate] = useState("");
+  const [paymentTerms, setPaymentTerms] = useState("");
+  const [invoiceAmount, setInvoiceAmount] = useState("");
+  const [invoiceCurrency, setInvoiceCurrency] = useState("HKD");
+  const [isPrepayment, setIsPrepayment] = useState(false);
+  const [ocrBusy, setOcrBusy] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState("bank_transfer");
   const [payeeBank, setPayeeBank] = useState("");
   const [payeeBankAccount, setPayeeBankAccount] = useState("");
@@ -309,6 +330,11 @@ export default function NewClaimPage() {
         setPayeeAddress(batch.payee_address || "");
         setPayeeGender(batch.payee_gender || "");
         setPayeePhone(batch.payee_phone || "");
+        setInvoiceDate(batch.invoice_date || "");
+        setPaymentTerms(batch.payment_terms || "");
+        setInvoiceAmount(batch.invoice_amount != null ? String(batch.invoice_amount) : "");
+        setInvoiceCurrency(batch.invoice_currency || "HKD");
+        setIsPrepayment(!!batch.is_prepayment);
 
         // 2. Load lines
         const { data: existingLines } = await supabase
@@ -334,6 +360,7 @@ export default function NewClaimPage() {
             hkd_amount: l.hkd_amount != null ? String(l.hkd_amount) : "",
             billable_to_client_hkd: l.billable_to_client_hkd != null ? String(l.billable_to_client_hkd) : "0",
             expense_category_code: l.expense_category_code || "",
+            line_charge_to: l.line_charge_to || "",
             means_of_transport: l.means_of_transport || "TAXI",
             taxi_reason: l.taxi_reason || "",
             // attach DB id so we can map back line-level attachments
@@ -607,6 +634,48 @@ export default function NewClaimPage() {
     setLines(prev => prev.filter(l => l._key !== key).map((l, idx) => ({ ...l, item_no: idx + 1 })));
   }
 
+  // 上載發票影像 → AI 解析自動填收款人/發票欄位，影像自動變附件
+  async function handleInvoiceOcr(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setOcrBusy(true);
+    try {
+      const res = await parseDocument(file, "meta_invoice");
+      const inv = res.invoices?.[0];
+      const vendor = (res.metadata as any)?.vendor;
+      let filled = 0;
+      if (vendor) { setPayeeName(String(vendor)); filled++; }
+      if (inv?.invoice_number) { setSupplierInvoiceNo(String(inv.invoice_number)); filled++; }
+      if (inv?.invoice_date) { setInvoiceDate(String(inv.invoice_date)); filled++; }
+      if (inv?.amount != null && !isNaN(Number(inv.amount))) { setInvoiceAmount(String(inv.amount)); filled++; }
+      if (inv?.currency) setInvoiceCurrency(String(inv.currency).toUpperCase());
+      // 得一行空白明細 → 順手填埋金額
+      setLines(prev => {
+        if (prev.length === 1 && !prev[0].hkd_amount && !prev[0].original_amount && inv?.amount != null) {
+          const cur = String(inv.currency || "HKD").toUpperCase();
+          const patch: Partial<LineForm> = cur === "HKD"
+            ? { hkd_amount: String(inv.amount), currency: "HKD", fx_rate: "1", original_amount: String(inv.amount) }
+            : { currency: cur, original_amount: String(inv.amount), fx_rate: "", hkd_amount: "" };
+          return [{ ...prev[0], ...patch, description: prev[0].description || inv.description || "" }];
+        }
+        return prev;
+      });
+      // 發票影像自動做附件 (附件係必填)
+      setAttachments(prev => [...prev, file]);
+      toast({
+        title: "發票解析完成 ✓",
+        description: filled > 0
+          ? `已自動填咗 ${filled} 個欄位，請核對一次（尤其係金額同發票號）`
+          : "解析唔到欄位 — 請人手填寫，影像已加入附件",
+      });
+    } catch (err: any) {
+      toast({ title: "發票解析失敗", description: `${err.message || err} — 請人手填寫`, variant: "destructive" });
+    } finally {
+      setOcrBusy(false);
+    }
+  }
+
   function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files || []);
     setAttachments(prev => [...prev, ...files]);
@@ -664,6 +733,80 @@ export default function NewClaimPage() {
           variant: "destructive",
         });
         return;
+      }
+      // 付款申請發票規則：必填欄位 + 每行合計=發票總額 + 附件 + 查重
+      if (claimType === "payment") {
+        if (!supplierInvoiceNo.trim()) {
+          toast({ title: "缺少發票號", description: "供應商發票號必填", variant: "destructive" });
+          return;
+        }
+        if (!invoiceDate) {
+          toast({ title: "缺少發票日期", description: "發票日期必填", variant: "destructive" });
+          return;
+        }
+        if (!paymentTerms) {
+          toast({ title: "缺少付款條款", description: "請揀付款條款 (COD / Net 30 …)", variant: "destructive" });
+          return;
+        }
+        const invAmt = parseFloat(invoiceAmount);
+        if (!invoiceAmount || isNaN(invAmt) || invAmt <= 0) {
+          toast({ title: "缺少發票總額", description: "發票總額必填 (要大過 0)", variant: "destructive" });
+          return;
+        }
+        // 附件 (發票影像) 必填
+        const lineReceiptCount = lines.reduce((s, l) => s + (l.receipts?.length || 0), 0);
+        const keptExisting =
+          existingAttachments.filter((a: any) => !removedAttachmentIds.has(a.id)).length +
+          Array.from(existingLineAttachments.values()).flat().filter((a: any) => !removedAttachmentIds.has(a.id)).length;
+        if (attachments.length + lineReceiptCount + keptExisting === 0) {
+          toast({ title: "缺少附件", description: "請上載發票影像 (可以用「上載發票自動填表」)", variant: "destructive" });
+          return;
+        }
+        // 每行金額合計 = 發票總額 (HKD 發票對 HKD 行；外幣發票對同幣別原幣)
+        const sum = invoiceCurrency === "HKD"
+          ? lines.reduce((s, l) => s + (parseFloat(l.hkd_amount || "0") || 0), 0)
+          : lines.reduce((s, l) => s + ((l.currency || "HKD") === invoiceCurrency ? (parseFloat(l.original_amount || "0") || 0) : 0), 0);
+        if (Math.abs(sum - invAmt) > 0.01) {
+          toast({
+            title: "行合計唔等於發票總額",
+            description: `明細行合計 ${invoiceCurrency} ${sum.toFixed(2)}，發票總額 ${invoiceCurrency} ${invAmt.toFixed(2)} — 拆行後要啱數先可以提交`,
+            variant: "destructive",
+          });
+          return;
+        }
+        // App 內查重：同一供應商 + 同一發票號 (DB trigger 都會擋，呢度俾清楚提示)
+        const escaped = supplierInvoiceNo.trim().replace(/[%_\\]/g, (m) => "\\" + m);
+        const { data: dupApp } = await supabase.from("claim_batches")
+          .select("id, batch_no, payee_name, status")
+          .eq("claim_type", "payment")
+          .neq("status", "rejected")
+          .ilike("supplier_invoice_no", escaped);
+        const dupHit = (dupApp || []).find((b: any) => b.id !== editId &&
+          String(b.payee_name || "").trim().toLowerCase() === payeeName.trim().toLowerCase());
+        if (dupHit) {
+          toast({
+            title: "重複發票",
+            description: `${dupHit.batch_no} 已用咗 ${payeeName} 嘅發票號 ${supplierInvoiceNo}，唔可以重複申請`,
+            variant: "destructive",
+          });
+          return;
+        }
+        // NetSuite 查重：呢個 vendor 現有嘅 vendor bill 有冇同一發票號
+        try {
+          const { data: nsChk, error: nsErr } = await supabase.functions.invoke("netsuite-check-vendor-bill", {
+            body: { payee_name: payeeName.trim(), invoice_no: supplierInvoiceNo.trim() },
+          });
+          if (!nsErr && nsChk?.exists) {
+            toast({
+              title: "NetSuite 已有呢張發票",
+              description: `Vendor bill ${nsChk.bill?.tranid || ""}（${nsChk.bill?.trandate || ""}）已入咗數，唔可以重複申請`,
+              variant: "destructive",
+            });
+            return;
+          }
+        } catch {
+          // NetSuite 暫時查唔到就唔阻提交 — app / DB 查重照樣生效
+        }
       }
       // 明細日期一定要喺 Period 月份之內
       if (periodBounds) {
@@ -760,11 +903,18 @@ export default function NewClaimPage() {
         payee_address: payeeType === "freelancer" ? (payeeAddress.trim() || null) : null,
         payee_gender: payeeType === "freelancer" ? (payeeGender || null) : null,
         payee_phone: payeeType === "freelancer" ? (payeePhone.trim() || null) : null,
+        invoice_date: invoiceDate || null,
+        payment_terms: paymentTerms || null,
+        invoice_amount: invoiceAmount ? parseFloat(invoiceAmount) : null,
+        invoice_currency: invoiceCurrency || "HKD",
+        is_prepayment: isPrepayment,
       } : {
         payee_name: null, payee_type: null, payment_method: null,
         payee_bank: null, payee_bank_account: null, payee_account_name: null,
         payee_fps_id: null, payment_due_date: null, supplier_invoice_no: null,
         payee_hkid: null, payee_address: null, payee_gender: null, payee_phone: null,
+        invoice_date: null, payment_terms: null, invoice_amount: null,
+        invoice_currency: null, is_prepayment: false,
       };
       let batch: any;
 
@@ -856,6 +1006,7 @@ export default function NewClaimPage() {
         hkd_amount: l.hkd_amount ? parseFloat(l.hkd_amount) : 0,
         billable_to_client_hkd: l.billable_to_client_hkd ? parseFloat(l.billable_to_client_hkd) : 0,
         expense_category_code: l.expense_category_code || null,
+        line_charge_to: claimType === "payment" ? (l.line_charge_to || null) : null,
         // transport — location_from / destination 已棄用，留 NULL 兼容舊 schema
         means_of_transport: l.means_of_transport || null,
         taxi_reason: l.taxi_reason || null,
@@ -1140,8 +1291,20 @@ export default function NewClaimPage() {
       {/* 付款申請 — 收款人 + 付款資料 */}
       {claimType === "payment" && (
         <Card><CardContent className="p-4 space-y-3">
-          <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-            <HandCoins size={15} /> 收款人資料 (Payee)
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+              <HandCoins size={15} /> 收款人資料 (Payee)
+            </div>
+            {/* 影相/上載發票 → AI 自動填收款人 + 發票欄位，影像自動做附件 */}
+            <label htmlFor="invoice-ocr-upload" className="inline-flex">
+              <Button asChild variant="outline" size="sm" disabled={ocrBusy}>
+                <span>
+                  {ocrBusy ? "解析緊發票…" : "📷 上載發票自動填表"}
+                </span>
+              </Button>
+            </label>
+            <input id="invoice-ocr-upload" type="file" accept=".pdf,.png,.jpg,.jpeg,.heic,.webp"
+              capture="environment" onChange={handleInvoiceOcr} className="hidden" data-testid="input-invoice-ocr" />
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <div className="relative">
@@ -1216,12 +1379,51 @@ export default function NewClaimPage() {
                 placeholder="同銀行紀錄一致" data-testid="input-payee-account-name" />
             </div>
             <div>
-              <Label className="text-xs">Supplier Invoice / 報價單 #</Label>
+              <Label className="text-xs">供應商發票號 * <span className="text-muted-foreground">(同一供應商不可重複)</span></Label>
               <Input value={supplierInvoiceNo} onChange={(e) => setSupplierInvoiceNo(e.target.value)} data-testid="input-supplier-invoice" />
+            </div>
+            <div>
+              <Label className="text-xs">發票日期 *</Label>
+              <Input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} data-testid="input-invoice-date" />
+            </div>
+            <div>
+              <Label className="text-xs">付款條款 *</Label>
+              <Select value={paymentTerms || undefined} onValueChange={setPaymentTerms}>
+                <SelectTrigger data-testid="select-payment-terms"><SelectValue placeholder="揀…" /></SelectTrigger>
+                <SelectContent>
+                  {PAYMENT_TERMS.map(t => <SelectItem key={t.code} value={t.code}>{t.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs">發票總額 *</Label>
+              <div className="flex gap-1.5">
+                <Select value={invoiceCurrency} onValueChange={setInvoiceCurrency}>
+                  <SelectTrigger className="w-[84px]" data-testid="select-invoice-currency"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {CURRENCIES.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+                <Input type="number" step="0.01" value={invoiceAmount}
+                  onChange={(e) => setInvoiceAmount(e.target.value)}
+                  placeholder="0.00" className="text-right" data-testid="input-invoice-amount" />
+              </div>
+              <div className="text-[10px] text-muted-foreground mt-0.5">明細行合計要等於呢個數 (可以拆多行唔同 project / 部門)</div>
             </div>
             <div>
               <Label className="text-xs">付款到期日</Label>
               <Input type="date" value={paymentDueDate} onChange={(e) => setPaymentDueDate(e.target.value)} data-testid="input-payment-due" />
+            </div>
+            <div className="flex items-end pb-1">
+              <label className="flex items-center gap-2 text-sm cursor-pointer">
+                <Checkbox checked={isPrepayment} onCheckedChange={(v) => setIsPrepayment(!!v)} data-testid="checkbox-prepayment" />
+                <span>
+                  預付款 / 按金 (Prepayment)
+                  <span className="block text-[10px] text-muted-foreground">
+                    唔係一般費用 — NetSuite 用 Vendor Prepayment / 預付科目入數，之後對沖
+                  </span>
+                </span>
+              </label>
             </div>
           </div>
           {/* IR56M 個人資料 — freelancer 新收款人 / 超過兩年冇銀行交易先顯示 (必填) */}
@@ -1288,6 +1490,7 @@ export default function NewClaimPage() {
                 <th className="px-2 py-2 text-left w-12">#</th>
                 <th className="px-2 py-2 text-left">日期</th>
                 <th className="px-2 py-2 text-left">Project</th>
+                {claimType === "payment" && <th className="px-2 py-2 text-left">部門 (Charge To)</th>}
                 {claimType !== "transportation" && <th className="px-2 py-2 text-left">Client</th>}
                 {claimType === "transportation" && <>
                   <th className="px-2 py-2 text-left">交通工具</th>
@@ -1358,6 +1561,33 @@ export default function NewClaimPage() {
                       </SelectContent>
                     </Select>
                   </td>
+                  {claimType === "payment" && (
+                    <td className="px-2 py-2">
+                      {/* 一張發票拆多個 department — 空 = 跟表頭 Charge To */}
+                      <Select
+                        value={l.line_charge_to || "__hdr__"}
+                        onValueChange={(v) => updateLine(l._key, { line_charge_to: v === "__hdr__" ? "" : v })}
+                      >
+                        <SelectTrigger className="h-7 text-xs min-w-[130px]">
+                          <SelectValue placeholder="跟表頭" />
+                        </SelectTrigger>
+                        <SelectContent className="max-h-[400px]">
+                          <SelectItem value="__hdr__">跟表頭 ({chargeToCode || "未揀"})</SelectItem>
+                          {chargeToOptions.map(({ entity, items }) => (
+                            <div key={entity}>
+                              <div className="sticky top-0 bg-muted/60 px-2 py-1 text-[10px] font-bold uppercase text-muted-foreground">{entity}</div>
+                              {items.map((d: any) => (
+                                <SelectItem key={d.charge_to} value={d.charge_to}>
+                                  <span className="font-mono text-[10px]">{d.charge_to}</span>
+                                  <span className="ml-1 text-muted-foreground">{d.name}</span>
+                                </SelectItem>
+                              ))}
+                            </div>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </td>
+                  )}
                   {claimType !== "transportation" && (
                     <td className="px-2 py-2">
                       <Input
@@ -1529,7 +1759,7 @@ export default function NewClaimPage() {
             </tbody>
             <tfoot>
               <tr className="border-t-2 border-border font-medium">
-                <td colSpan={claimType !== "transportation" ? 11 : 6} className="px-2 py-2 text-right">TOTAL</td>
+                <td colSpan={claimType === "transportation" ? 6 : claimType === "payment" ? 12 : 11} className="px-2 py-2 text-right">TOTAL</td>
                 <td className="px-2 py-2 text-right tabular-nums">
                   HK${totalHkd.toFixed(2)}
                 </td>

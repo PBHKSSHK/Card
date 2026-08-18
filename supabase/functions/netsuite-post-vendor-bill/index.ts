@@ -6,9 +6,11 @@
 //   vendor  = payee_name (SuiteQL 對 companyname / entityid，唔分大小寫；
 //             搵唔到 exact 先試 contains，要唯一先用)
 //   bill    = { externalId: batch_no, tranId: supplier_invoice_no,
-//               tranDate: approved date (HK), dueDate: payment_due_date,
+//               tranDate: invoice_date (fallback approved/submit date),
+//               dueDate: payment_due_date,
 //               expense lines: account ← expense_categories→COA internal id,
-//               department ← charge_to, customer ← project (job) }
+//               department ← line_charge_to 或表頭 charge_to, customer ← project (job) }
+// 預付款 (is_prepayment) 唔會自動開 bill — NetSuite 用 Vendor Prepayment 手動入。
 // Success → claim_batches.status='exported' + netsuite_journal_no='BILL <id>'.
 // Duplicate externalId → status 'duplicate' (幂等，可以放心重按)。
 //
@@ -108,11 +110,11 @@ Deno.serve(async (req) => {
 
     // ---- load batches + lines ----
     const { data: batches, error: bErr } = await svc.from('claim_batches')
-      .select('id,batch_no,claim_type,status,full_name,charge_to_code,entity_code,subsidiary_full_name,department_name,submit_date,approved_at,payee_name,payee_type,payment_due_date,supplier_invoice_no,netsuite_journal_no')
+      .select('id,batch_no,claim_type,status,full_name,charge_to_code,entity_code,subsidiary_full_name,department_name,submit_date,approved_at,payee_name,payee_type,payment_due_date,supplier_invoice_no,netsuite_journal_no,invoice_date,is_prepayment')
       .in('id', batchIds).eq('claim_type', 'payment');
     if (bErr) throw bErr;
     const { data: allLines, error: lErr } = await svc.from('claim_lines')
-      .select('batch_id,item_no,line_date,project_code,description,client_name,hkd_amount,expense_category_code,line_status')
+      .select('batch_id,item_no,line_date,project_code,description,client_name,hkd_amount,expense_category_code,line_status,line_charge_to')
       .in('batch_id', batchIds).order('item_no');
     if (lErr) throw lErr;
     const linesByBatch = new Map<string, any[]>();
@@ -190,6 +192,12 @@ Deno.serve(async (req) => {
       const problems: string[] = [];
       const lines = linesByBatch.get(batch.id) || [];
 
+      // 預付款/按金 — 唔係一般費用，唔會自動開 bill；NetSuite 用 Vendor
+      // Prepayment / 預付科目手動入數，之後對沖。
+      if (batch.is_prepayment) {
+        results.push({ batch_id: batch.id, batch_no: batch.batch_no, label, status: 'prepayment', error: '預付款 — 請喺 NetSuite 用 Vendor Prepayment 入數，App 度撳「標記已入數」' });
+        continue;
+      }
       if (!['approved', 'exported'].includes(batch.status)) problems.push(`status 係 ${batch.status}，要 approved 先可以入數`);
       if (lines.length === 0) problems.push('冇 approved 明細行');
       if (!batch.batch_no) problems.push('冇 batch no');
@@ -215,8 +223,11 @@ Deno.serve(async (req) => {
           amount: amt,
           memo: [l.description, l.client_name ? `(${l.client_name})` : ''].filter(Boolean).join(' ').slice(0, 4000) || undefined,
         };
-        const did = batch.charge_to_code ? deptByChargeTo.get(batch.charge_to_code) : undefined;
+        // 一張發票拆多個 department：行有自己嘅 charge to 就用行嘅，否則跟表頭
+        const chargeTo = (l.line_charge_to || batch.charge_to_code || '').trim();
+        const did = chargeTo ? deptByChargeTo.get(chargeTo) : undefined;
         if (did != null) item.department = { id: String(did) };
+        else if (l.line_charge_to) problems.push(`行 #${l.item_no} 嘅 charge to ${l.line_charge_to} 冇 department internal id`);
         const cp = (l.project_code || '').trim();
         if (cp) {
           const jid = jobId.get(cp);
@@ -239,7 +250,8 @@ Deno.serve(async (req) => {
         entity: { id: vendor!.id },
         subsidiary: { id: String(sid) },
         currency: { id: '1' },
-        tranDate: toHKDate(batch.approved_at) || batch.submit_date || new Date().toISOString().slice(0, 10),
+        // 發票日期優先做 bill date；冇先用批核日/提交日
+        tranDate: batch.invoice_date || toHKDate(batch.approved_at) || batch.submit_date || new Date().toISOString().slice(0, 10),
         memo: `CardRecon payment requisition ${batch.batch_no} - req by ${batch.full_name || '?'}`.slice(0, 4000),
         expense: { items },
       };

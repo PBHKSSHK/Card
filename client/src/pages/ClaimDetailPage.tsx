@@ -673,7 +673,12 @@ export default function ClaimDetailPage() {
           <div className="mt-3 pt-3 border-t border-border/40 grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
             <div>
               <div className="text-xs text-muted-foreground">收款人</div>
-              <div className="font-medium">{batch.payee_name || "—"}</div>
+              <div className="font-medium">
+                {batch.payee_name || "—"}
+                {batch.is_prepayment && (
+                  <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-700 dark:text-purple-400 font-medium">預付款</span>
+                )}
+              </div>
               <div className="text-xs text-muted-foreground">
                 {batch.payee_type === "freelancer" ? "Freelancer 自由工作者" : batch.payee_type === "supplier" ? "Supplier 供應商" : ""}
               </div>
@@ -698,8 +703,17 @@ export default function ClaimDetailPage() {
               {batch.payee_account_name && <div className="text-xs text-muted-foreground">{batch.payee_account_name}</div>}
             </div>
             <div>
-              <div className="text-xs text-muted-foreground">Supplier Invoice #</div>
+              <div className="text-xs text-muted-foreground">發票</div>
               <div className="font-mono text-xs">{batch.supplier_invoice_no || "—"}</div>
+              <div className="text-xs text-muted-foreground">
+                {batch.invoice_date || "—"}
+                {batch.invoice_amount != null && ` · ${batch.invoice_currency || "HKD"} ${Number(batch.invoice_amount).toFixed(2)}`}
+              </div>
+              {batch.payment_terms && (
+                <div className="text-[10px] text-muted-foreground">
+                  條款: {({ due_on_receipt: "即時付款", net7: "Net 7", net14: "Net 14", net30: "Net 30", net60: "Net 60", monthly: "月結", other: "其他" } as Record<string, string>)[batch.payment_terms] || batch.payment_terms}
+                </div>
+              )}
             </div>
             {/* IR56M 個人資料 (freelancer 新收款人 / 兩年冇交易先有) */}
             {(batch.payee_hkid || batch.payee_phone || batch.payee_address || batch.payee_gender) && (
