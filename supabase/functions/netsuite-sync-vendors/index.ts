@@ -86,6 +86,7 @@ Deno.serve(async (req) => {
     const runStart = new Date().toISOString();
     let lastId = -1;
     let fetched = 0, pages = 0;
+    const allRecords: any[] = [];
     for (;;) {
       pages++;
       if (pages > 30) break; // ~30k vendors hard stop
@@ -98,21 +99,39 @@ Deno.serve(async (req) => {
       fetched += rows.length;
       lastId = Number(rows[rows.length - 1].id);
 
-      const records = rows.map((r: any) => {
+      for (const r of rows) {
         const personName = [r.firstname, r.lastname].filter(Boolean).join(' ').trim();
-        return {
+        allRecords.push({
           internal_id: Number(r.id),
           entityid: r.entityid || null,
           company_name: r.companyname || personName || r.entityid || String(r.id),
           is_person: r.isperson === 'T',
           is_inactive: false,
+          last_payment_date: null as string | null,
           synced_at: runStart,
-        };
-      });
-      const { error } = await svc.from('ns_vendor_directory').upsert(records, { onConflict: 'internal_id' });
-      if (error) throw error;
-
+        });
+      }
       if (rows.length < 1000) break;
+    }
+
+    // 最後銀行交易日期 per vendor (vendor payment / cheque) —
+    // 自由工作者超過兩年冇交易要重新交 IR56M 個人資料，就係靠呢個日期判斷
+    const lastPay = new Map<number, string>();
+    for (const r of await suiteql(`
+      SELECT t.entity AS vid, TO_CHAR(MAX(t.trandate),'YYYY-MM-DD') AS last_pay
+      FROM transaction t
+      WHERE t.type IN ('VendPymt', 'Check') AND t.entity IS NOT NULL
+      GROUP BY t.entity`)) {
+      lastPay.set(Number(r.vid), String(r.last_pay));
+    }
+    for (const rec of allRecords) {
+      rec.last_payment_date = lastPay.get(rec.internal_id) || null;
+    }
+
+    for (let i = 0; i < allRecords.length; i += 500) {
+      const { error } = await svc.from('ns_vendor_directory')
+        .upsert(allRecords.slice(i, i + 500), { onConflict: 'internal_id' });
+      if (error) throw error;
     }
 
     // 今次 run 冇觸及嘅 = NetSuite 已停用/刪除 → 收起佢

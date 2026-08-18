@@ -538,6 +538,11 @@ export default function ApprovalInboxPage() {
                           {selected.supplier_invoice_no && ` · INV: ${selected.supplier_invoice_no}`}
                         </div>
                       )}
+                      {selected.claim_type === "payment" && (selected.payee_hkid || selected.payee_phone || selected.payee_address) && (
+                        <div className="text-[10px] text-amber-700 dark:text-amber-400">
+                          IR56M: HKID {selected.payee_hkid || "—"} · {selected.payee_gender === "M" ? "男" : selected.payee_gender === "F" ? "女" : "—"} · {selected.payee_phone || "—"} · {selected.payee_address || "—"}
+                        </div>
+                      )}
                       <div className="text-[10px] text-muted-foreground">
                         {selected.subsidiary_full_name} · {selected.charge_to_code} · 提交 {selected.submit_date}
                       </div>

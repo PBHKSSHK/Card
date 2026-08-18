@@ -192,6 +192,11 @@ export default function NewClaimPage() {
     routeType === "payment_freelancer" ? "freelancer" : "supplier"
   );
   const [payeeFocus, setPayeeFocus] = useState(false);
+  // IR56M 個人資料 (freelancer 付款先用)
+  const [payeeHkid, setPayeeHkid] = useState("");
+  const [payeeAddress, setPayeeAddress] = useState("");
+  const [payeeGender, setPayeeGender] = useState("");
+  const [payeePhone, setPayeePhone] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("bank_transfer");
   const [payeeBank, setPayeeBank] = useState("");
   const [payeeBankAccount, setPayeeBankAccount] = useState("");
@@ -300,6 +305,10 @@ export default function NewClaimPage() {
         setPayeeFpsId(batch.payee_fps_id || "");
         setPaymentDueDate(batch.payment_due_date || "");
         setSupplierInvoiceNo(batch.supplier_invoice_no || "");
+        setPayeeHkid(batch.payee_hkid || "");
+        setPayeeAddress(batch.payee_address || "");
+        setPayeeGender(batch.payee_gender || "");
+        setPayeePhone(batch.payee_phone || "");
 
         // 2. Load lines
         const { data: existingLines } = await supabase
@@ -478,7 +487,7 @@ export default function NewClaimPage() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("ns_vendor_directory")
-        .select("internal_id, entityid, company_name, is_person")
+        .select("internal_id, entityid, company_name, is_person, last_payment_date")
         .eq("is_inactive", false)
         .eq("is_person", payeeType === "freelancer")
         .order("company_name");
@@ -498,13 +507,26 @@ export default function NewClaimPage() {
       .slice(0, 8);
   }, [nsVendors, payeeName]);
 
-  const payeeInNs = useMemo(() => {
+  const matchedVendor = useMemo(() => {
     const q = payeeName.trim().toLowerCase();
-    if (!q) return false;
-    return nsVendors.some((v: any) =>
+    if (!q) return null;
+    return nsVendors.find((v: any) =>
       (v.company_name || "").trim().toLowerCase() === q ||
-      (v.entityid || "").trim().toLowerCase() === q);
+      (v.entityid || "").trim().toLowerCase() === q) || null;
   }, [nsVendors, payeeName]);
+  const payeeInNs = !!matchedVendor;
+
+  // IR56M 規則：freelancer 付款，NetSuite 未有呢個人，或者有但超過兩年
+  // 冇銀行交易 (last_payment_date) — 一律要重新提交個人資料。
+  const twoYearsAgo = useMemo(() => {
+    const d = new Date();
+    d.setFullYear(d.getFullYear() - 2);
+    return d.toISOString().slice(0, 10);
+  }, []);
+  const needsPersonalInfo =
+    claimType === "payment" && payeeType === "freelancer" && !!payeeName.trim() &&
+    (!matchedVendor || !(matchedVendor as any).last_payment_date ||
+      (matchedVendor as any).last_payment_date < twoYearsAgo);
 
   // 同 Upload Centre / Assign / Split 同一規則：
   // 揀咗 Project → Category 只出 [Project] (account 7xxxx)；
@@ -634,6 +656,15 @@ export default function NewClaimPage() {
         toast({ title: "缺少收款人", description: "付款申請必須填收款人 (supplier / freelancer 名稱)", variant: "destructive" });
         return;
       }
+      // IR56M: 新收款人 / 超過兩年冇銀行交易嘅自由工作者 — 個人資料必填
+      if (needsPersonalInfo && (!payeeHkid.trim() || !payeeAddress.trim() || !payeeGender || !payeePhone.trim())) {
+        toast({
+          title: "個人資料未填齊 (IR56M)",
+          description: "呢位自由工作者係新收款人或超過兩年冇銀行交易 — HKID、住址、性別、電話全部必填",
+          variant: "destructive",
+        });
+        return;
+      }
       // 明細日期一定要喺 Period 月份之內
       if (periodBounds) {
         const bad = lines.filter(l => l.hkd_amount && l.line_date &&
@@ -725,10 +756,15 @@ export default function NewClaimPage() {
         payee_fps_id: payeeFpsId.trim() || null,
         payment_due_date: paymentDueDate || null,
         supplier_invoice_no: supplierInvoiceNo.trim() || null,
+        payee_hkid: payeeType === "freelancer" ? (payeeHkid.trim() || null) : null,
+        payee_address: payeeType === "freelancer" ? (payeeAddress.trim() || null) : null,
+        payee_gender: payeeType === "freelancer" ? (payeeGender || null) : null,
+        payee_phone: payeeType === "freelancer" ? (payeePhone.trim() || null) : null,
       } : {
         payee_name: null, payee_type: null, payment_method: null,
         payee_bank: null, payee_bank_account: null, payee_account_name: null,
         payee_fps_id: null, payment_due_date: null, supplier_invoice_no: null,
+        payee_hkid: null, payee_address: null, payee_gender: null, payee_phone: null,
       };
       let batch: any;
 
@@ -1188,6 +1224,48 @@ export default function NewClaimPage() {
               <Input type="date" value={paymentDueDate} onChange={(e) => setPaymentDueDate(e.target.value)} data-testid="input-payment-due" />
             </div>
           </div>
+          {/* IR56M 個人資料 — freelancer 新收款人 / 超過兩年冇銀行交易先顯示 (必填) */}
+          {payeeType === "freelancer" && needsPersonalInfo && (
+            <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-3 space-y-3">
+              <div className="text-xs font-medium text-amber-700 dark:text-amber-400">
+                個人資料 (IR56M 報稅用途) — {matchedVendor
+                  ? "呢位收款人超過兩年冇銀行交易，要重新提交"
+                  : "NetSuite 未有呢位收款人，要提交"}個人資料，全部必填
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div>
+                  <Label className="text-xs">HKID 身份證號碼 *</Label>
+                  <Input value={payeeHkid} onChange={(e) => setPayeeHkid(e.target.value)}
+                    placeholder="e.g. A123456(7)" data-testid="input-payee-hkid" />
+                </div>
+                <div>
+                  <Label className="text-xs">性別 *</Label>
+                  <Select value={payeeGender || undefined} onValueChange={setPayeeGender}>
+                    <SelectTrigger data-testid="select-payee-gender"><SelectValue placeholder="揀…" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="M">男 M</SelectItem>
+                      <SelectItem value="F">女 F</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-xs">電話 *</Label>
+                  <Input value={payeePhone} onChange={(e) => setPayeePhone(e.target.value)}
+                    placeholder="e.g. 9123 4567" data-testid="input-payee-phone" />
+                </div>
+                <div className="md:col-span-3">
+                  <Label className="text-xs">住址 *</Label>
+                  <Input value={payeeAddress} onChange={(e) => setPayeeAddress(e.target.value)}
+                    placeholder="完整通訊地址" data-testid="input-payee-address" />
+                </div>
+              </div>
+            </div>
+          )}
+          {payeeType === "freelancer" && payeeName.trim() && !needsPersonalInfo && (
+            <div className="text-[10px] text-emerald-600 dark:text-emerald-400">
+              ✓ 呢位自由工作者兩年內有銀行交易紀錄，唔使重新提交個人資料
+            </div>
+          )}
           <div className="text-[10px] text-muted-foreground">
             記得喺下面附件位上載 supplier invoice / 報價單，方便審批。
           </div>

@@ -701,6 +701,16 @@ export default function ClaimDetailPage() {
               <div className="text-xs text-muted-foreground">Supplier Invoice #</div>
               <div className="font-mono text-xs">{batch.supplier_invoice_no || "—"}</div>
             </div>
+            {/* IR56M 個人資料 (freelancer 新收款人 / 兩年冇交易先有) */}
+            {(batch.payee_hkid || batch.payee_phone || batch.payee_address || batch.payee_gender) && (
+              <div className="col-span-2 md:col-span-4 rounded bg-amber-500/10 px-3 py-2 text-xs">
+                <span className="font-medium text-amber-700 dark:text-amber-400 mr-2">IR56M 個人資料:</span>
+                HKID <span className="font-mono">{batch.payee_hkid || "—"}</span>
+                {" · "}性別 {batch.payee_gender === "M" ? "男" : batch.payee_gender === "F" ? "女" : "—"}
+                {" · "}電話 <span className="font-mono">{batch.payee_phone || "—"}</span>
+                {" · "}住址 {batch.payee_address || "—"}
+              </div>
+            )}
           </div>
         )}
 
