@@ -729,6 +729,17 @@ export default function ClaimDetailPage() {
           </div>
         )}
 
+        {/* Claim forms — 同事自己嘅收款資料 */}
+        {claimType !== "payment" && (batch.payee_bank || batch.payee_bank_account || batch.payee_fps_id) && (
+          <div className="mt-3 pt-3 border-t border-border/40 text-xs">
+            <span className="text-muted-foreground mr-2">付款資料:</span>
+            {batch.payment_method === "fps"
+              ? <>FPS <span className="font-mono">{batch.payee_fps_id || "—"}</span></>
+              : <>{batch.payee_bank || "—"} <span className="font-mono">{batch.payee_bank_account || ""}</span></>}
+            {batch.payee_account_name && <span className="text-muted-foreground"> · {batch.payee_account_name}</span>}
+          </div>
+        )}
+
         {batch.assigned_team_head_name && (
           <div className="mt-3 pt-3 border-t border-border/40 flex items-center gap-3 text-xs">
             <UserIcon size={14} className="text-muted-foreground" />

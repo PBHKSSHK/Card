@@ -960,9 +960,14 @@ export default function NewClaimPage() {
         invoice_currency: invoiceCurrency || "HKD",
         is_prepayment: isPrepayment,
       } : {
-        payee_name: null, payee_type: null, payment_method: null,
-        payee_bank: null, payee_bank_account: null, payee_account_name: null,
-        payee_fps_id: null, payment_due_date: null, supplier_invoice_no: null,
+        // claim forms 都有付款資料 (同事自己收款方式)；發票/收款人欄位保持 null
+        payee_name: null, payee_type: null,
+        payment_method: paymentMethod || null,
+        payee_bank: payeeBank.trim() || null,
+        payee_bank_account: payeeBankAccount.trim() || null,
+        payee_account_name: payeeAccountName.trim() || null,
+        payee_fps_id: payeeFpsId.trim() || null,
+        payment_due_date: null, supplier_invoice_no: null,
         payee_hkid: null, payee_address: null, payee_gender: null, payee_phone: null,
         invoice_date: null, payment_terms: null, invoice_amount: null,
         invoice_currency: null, is_prepayment: false,
@@ -1298,45 +1303,18 @@ export default function NewClaimPage() {
             <Label className="text-xs">Nick Name</Label>
             <Input value={nickName} onChange={(e) => setNickName(e.target.value)} data-testid="input-nickname" />
           </div>
-          {claimType === "payment" ? (
-            /* 付款申請: 第一行 = Claimant / Nick Name / Submit Date，冇第二行 */
-            <div>
-              <Label className="text-xs">Submit Date</Label>
-              <Input type="date" value={submitDate} onChange={(e) => setSubmitDate(e.target.value)} data-testid="input-submit-date" />
-            </div>
-          ) : (
-            <div>
-              <Label className="text-xs">Department (HR 分組)</Label>
-              <Select value={department || "__none__"} onValueChange={(v) => setDepartment(v === "__none__" ? "" : v)}>
-                <SelectTrigger data-testid="select-department"><SelectValue placeholder="選擇部門" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__none__">—</SelectItem>
-                  {HR_DEPARTMENTS.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-          )}
-          {claimType !== "payment" && <>
-            <div className="md:col-span-2 flex items-end">
-              {/* Charge To 已搬落每行明細 (日期同 Project 之間)；公司由第一行推導 */}
-              <div className="text-xs text-muted-foreground pb-2">
-                Charge To 喺下面每行明細度揀 —
-                {chargeToCode && chargeToMap.get(chargeToCode) ? (
-                  <> 入賬公司: <span className="font-medium text-foreground">{chargeToMap.get(chargeToCode)?.subsidiary_full_name}</span> (跟第 1 行)</>
-                ) : (
-                  <> 第一行揀咗會自動決定入賬公司</>
-                )}
-              </div>
-            </div>
-            <div>
+          {/* 第一行第三格 = Submit Date (Department 已刪) */}
+          <div>
+            <Label className="text-xs">Submit Date</Label>
+            <Input type="date" value={submitDate} onChange={(e) => setSubmitDate(e.target.value)} data-testid="input-submit-date" />
+          </div>
+          {claimType !== "payment" && (
+            /* Claim forms 第二行只保留 Period，靠右 */
+            <div className="md:col-start-3">
               <Label className="text-xs">Period (Month) <span className="text-muted-foreground">(明細日期只可以喺呢個月內)</span></Label>
               <Input type="month" value={periodMonth} onChange={(e) => handlePeriodChange(e.target.value)} data-testid="input-period" />
             </div>
-            <div>
-              <Label className="text-xs">Submit Date</Label>
-              <Input type="date" value={submitDate} onChange={(e) => setSubmitDate(e.target.value)} data-testid="input-submit-date" />
-            </div>
-          </>}
+          )}
         </div>
       </CardContent></Card>
 
@@ -1873,8 +1851,8 @@ export default function NewClaimPage() {
         )}
       </CardContent></Card>
 
-      {/* 付款資料 (payment only) — 付款方式 + 銀行/FPS 收款資料，放喺附件下方 */}
-      {claimType === "payment" && (
+      {/* 付款資料 — 全部類型都有 (claim forms = 同事自己收款資料；payment = 收款人銀行資料) */}
+      {(
         <Card><CardContent className="p-4 space-y-3">
           <div className="text-sm font-medium">付款資料 (Payment Details)</div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
