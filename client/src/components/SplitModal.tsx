@@ -80,6 +80,7 @@ export default function SplitModal({ transaction, onClose, onSaved }: Props) {
         .from("expense_categories")
         .select("*")
         .eq("is_active", true)
+        .eq("admin_only", false) // 8100 admin a/c 只喺供應商付款申請用
         .order("sort_order");
       if (error) throw error;
       return data as ExpenseCategory[];

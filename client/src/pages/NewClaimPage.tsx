@@ -520,7 +520,7 @@ export default function NewClaimPage() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("expense_categories")
-        .select("category_key, label_zh, label_en, ns_account_number, sort_order, is_active")
+        .select("category_key, label_zh, label_en, ns_account_number, sort_order, is_active, admin_only")
         .eq("is_active", true)
         .order("sort_order");
       if (error) return [];
@@ -528,13 +528,16 @@ export default function NewClaimPage() {
     },
   });
 
-  // Filter by claim type
+  // Filter by claim type。admin_only (8100 a/c) — 只有 owner/admin
+  // 開供應商付款申請先揀到，其他表格 / 用戶一律唔顯示。
   const expenseCategories = useMemo(() => {
+    const base = expenseCategoriesRaw.filter((c: any) =>
+      !c.admin_only || (claimType === "payment" && payeeType === "supplier" && isSuperUser));
     if (claimType === "transportation") {
-      return expenseCategoriesRaw.filter((c: any) => TRANSPORT_CATEGORY_KEYS.includes(c.category_key));
+      return base.filter((c: any) => TRANSPORT_CATEGORY_KEYS.includes(c.category_key));
     }
-    return expenseCategoriesRaw;
-  }, [expenseCategoriesRaw, claimType]);
+    return base;
+  }, [expenseCategoriesRaw, claimType, payeeType, isSuperUser]);
 
   // NetSuite vendor 名冊 (ns_vendor_directory 鏡射) — 收款人揀選來源。
   // individual = 自由工作者，company = 供應商；表格類型只出對應嗰批。

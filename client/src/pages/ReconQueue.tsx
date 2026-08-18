@@ -638,6 +638,7 @@ export default function ReconQueue() {
         .from("expense_categories")
         .select("*")
         .eq("is_active", true)
+        .eq("admin_only", false) // 8100 admin a/c 只喺供應商付款申請用
         .order("sort_order", { ascending: true });
       if (error) {
         console.warn("[ReconQueue] expense_categories unavailable:", error.message);
