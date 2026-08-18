@@ -2,7 +2,7 @@
 // 新建 Claim form
 // URL: /claims/new/expenses 或 /claims/new/transportation
 // 用 useRoute 取出 claim_type
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { useRoute, useLocation } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
@@ -422,6 +422,7 @@ export default function NewClaimPage() {
   const [attachments, setAttachments] = useState<File[]>([]);
 
   const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
 
   // ns_departments for charge_to dropdown
   const { data: nsDepartments = [] } = useQuery({
@@ -707,6 +708,19 @@ export default function NewClaimPage() {
       toast({ title: "未登入", description: "請重新登入", variant: "destructive" });
       return;
     }
+    // double-click 防護 — setSaving 係 async，快手連撳兩下會插兩張 batch
+    // (實例: PAY-202608-0001/0002 一秒內孖生)，用 ref 即時擋
+    if (savingRef.current) return;
+    savingRef.current = true;
+    try {
+      await doSave(asSubmit);
+    } finally {
+      savingRef.current = false;
+    }
+  }
+
+  async function doSave(asSubmit: boolean) {
+    if (!session?.user?.id) return;
     // Draft 可以唔填 charge_to_code / full_name；submit 先要 enforce
     if (asSubmit) {
       if (!chargeToCode) {
@@ -775,11 +789,12 @@ export default function NewClaimPage() {
           return;
         }
         // App 內查重：同一供應商 + 同一發票號 (DB trigger 都會擋，呢度俾清楚提示)
+        // 只計已提交嘅單 — draft (包括提交失敗留低嘅) 唔應該阻住正式提交
         const escaped = supplierInvoiceNo.trim().replace(/[%_\\]/g, (m) => "\\" + m);
         const { data: dupApp } = await supabase.from("claim_batches")
           .select("id, batch_no, payee_name, status")
           .eq("claim_type", "payment")
-          .neq("status", "rejected")
+          .not("status", "in", "(rejected,draft)")
           .ilike("supplier_invoice_no", escaped);
         const dupHit = (dupApp || []).find((b: any) => b.id !== editId &&
           String(b.payee_name || "").trim().toLowerCase() === payeeName.trim().toLowerCase());
@@ -863,7 +878,7 @@ export default function NewClaimPage() {
             .select("line_date, hkd_amount, description, line_status, batch_id, claim_batches!inner(claimant_user_id, status, batch_no, claim_type)")
             .in("line_date", dates)
             .eq("claim_batches.claimant_user_id", effClaimant)
-            .neq("claim_batches.status", "rejected")
+            .not("claim_batches.status", "in", "(rejected,draft)")
             .in("claim_batches.claim_type", ["expenses", "transportation"]);
           for (const l of amtLines) {
             const hit: any = (existing || []).find((e: any) =>
