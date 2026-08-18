@@ -36,6 +36,20 @@ const PAYMENT_TERMS = [
   { code: "other", label: "其他" },
 ];
 
+// 付款條款 → 付款到期日。基準日 = 發票日期 (冇就用 Submit Date)。
+// 即時付款 = 基準日；Net N = 基準日 + N 日；月結 = 基準日下個月月底；其他 = 唔自動計。
+const TERMS_NET_DAYS: Record<string, number> = { due_on_receipt: 0, net7: 7, net14: 14, net30: 30, net60: 60 };
+function dueDateFromTerms(terms: string, baseIso: string): string | null {
+  if (!terms || !baseIso) return null;
+  const d = new Date(baseIso + "T00:00:00");
+  if (isNaN(d.getTime())) return null;
+  if (terms in TERMS_NET_DAYS) d.setDate(d.getDate() + TERMS_NET_DAYS[terms]);
+  else if (terms === "monthly") d.setMonth(d.getMonth() + 2, 0);
+  else return null;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
 const PAYMENT_METHODS = [
   { code: "bank_transfer", label: "銀行轉賬" },
   { code: "fps", label: "FPS 轉數快" },
@@ -230,6 +244,12 @@ export default function NewClaimPage() {
   const [payeeFpsId, setPayeeFpsId] = useState("");
   const [paymentDueDate, setPaymentDueDate] = useState("");
   const [supplierInvoiceNo, setSupplierInvoiceNo] = useState("");
+
+  // 揀付款條款 / 改發票日期 → 自動填付款到期日 (之後仍可手動改)
+  const applyTermsDueDate = (terms: string, baseOverride?: string) => {
+    const due = dueDateFromTerms(terms, baseOverride ?? (invoiceDate || submitDate));
+    if (due) setPaymentDueDate(due);
+  };
 
   // Sync default claimant 同 fullName 跟住 profile 更新
   useEffect(() => {
@@ -774,7 +794,11 @@ export default function NewClaimPage() {
       let filled = 0;
       if (vendor) { setPayeeName(String(vendor)); filled++; }
       if (inv?.invoice_number) { setSupplierInvoiceNo(String(inv.invoice_number)); filled++; }
-      if (inv?.invoice_date) { setInvoiceDate(String(inv.invoice_date)); filled++; }
+      if (inv?.invoice_date) {
+        setInvoiceDate(String(inv.invoice_date));
+        if (paymentTerms) applyTermsDueDate(paymentTerms, String(inv.invoice_date));
+        filled++;
+      }
       if (inv?.amount != null && !isNaN(Number(inv.amount))) { setInvoiceAmount(String(inv.amount)); filled++; }
       if (inv?.currency) setInvoiceCurrency(String(inv.currency).toUpperCase());
       // 得一行空白明細 → 順手填埋金額
@@ -1504,7 +1528,12 @@ export default function NewClaimPage() {
             </div>
             <div>
               <Label className="text-xs">{payeeType === "freelancer" ? "發票日期" : "發票日期 *"}</Label>
-              <Input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} data-testid="input-invoice-date" />
+              <Input type="date" value={invoiceDate}
+                onChange={(e) => {
+                  setInvoiceDate(e.target.value);
+                  if (paymentTerms) applyTermsDueDate(paymentTerms, e.target.value || submitDate);
+                }}
+                data-testid="input-invoice-date" />
             </div>
             <div>
               <Label className="text-xs">{payeeType === "freelancer" ? "發票總額 (有發票先填)" : "發票總額 *"}</Label>
@@ -1528,10 +1557,13 @@ export default function NewClaimPage() {
             <div>
               <Label className="text-xs">付款到期日</Label>
               <Input type="date" value={paymentDueDate} onChange={(e) => setPaymentDueDate(e.target.value)} data-testid="input-payment-due" />
+              <div className="text-[10px] text-muted-foreground mt-0.5">
+                揀付款條款會自動計 (發票日期起計，冇發票日期就由 Submit Date 計) — 可以自己改
+              </div>
             </div>
             <div>
               <Label className="text-xs">付款條款 *</Label>
-              <Select value={paymentTerms || undefined} onValueChange={setPaymentTerms}>
+              <Select value={paymentTerms || undefined} onValueChange={(v) => { setPaymentTerms(v); applyTermsDueDate(v); }}>
                 <SelectTrigger data-testid="select-payment-terms"><SelectValue placeholder="揀…" /></SelectTrigger>
                 <SelectContent>
                   {PAYMENT_TERMS.map(t => <SelectItem key={t.code} value={t.code}>{t.label}</SelectItem>)}
