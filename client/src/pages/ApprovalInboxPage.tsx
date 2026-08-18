@@ -519,7 +519,7 @@ export default function ApprovalInboxPage() {
                     <div>
                       <div className="flex items-center gap-2">
                         <span className="font-mono text-base font-bold">{selected.batch_no}</span>
-                        <button onClick={() => setLocation(`/claims/${selected.id}`)} className="text-[10px] text-muted-foreground hover:text-foreground underline">
+                        <button onClick={() => setLocation(selected.claim_type === "payment" ? `/payments/${selected.id}` : `/claims/${selected.id}`)} className="text-[10px] text-muted-foreground hover:text-foreground underline">
                           開完整頁
                         </button>
                       </div>

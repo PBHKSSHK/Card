@@ -75,6 +75,9 @@ function AppRouter() {
         <Route path="/bank-recon">{() => <Gate module="bank" superOnly component={BankRecon} />}</Route>
         {/* Claims 模組 */}
         <Route path="/payments">{() => <Gate module="claims" component={PaymentsPage} />}</Route>
+        {/* 付款申請詳情/修改用自己嘅 URL — sidebar 先識亮「付款申請」 */}
+        <Route path="/payments/:id/edit">{() => <Gate module="claims" component={NewClaimPage} />}</Route>
+        <Route path="/payments/:id">{() => <Gate module="claims" component={ClaimDetailPage} />}</Route>
         <Route path="/claims/inbox">{() => <Gate module="claims" component={ApprovalInboxPage} />}</Route>
         <Route path="/claims/export">{() => <Gate module="claims" superOnly component={ClaimJournalExport} />}</Route>
         <Route path="/claims">{() => <Gate module="claims" component={ClaimsPage} />}</Route>

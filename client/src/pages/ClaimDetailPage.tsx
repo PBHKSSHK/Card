@@ -36,12 +36,13 @@ const STATUS_LABELS: Record<string, { label: string; color: string }> = {
 
 export default function ClaimDetailPage() {
   const [, params] = useRoute<{ id: string }>("/claims/:id");
+  const [, payParams] = useRoute<{ id: string }>("/payments/:id");
   const [, setLocation] = useLocation();
   const { profile, session, isSuperUser } = useAuth();
   const { toast } = useToast();
   const qc = useQueryClient();
 
-  const claimId = params?.id;
+  const claimId = params?.id || payParams?.id;
   const [comment, setComment] = useState("");
   const [processing, setProcessing] = useState(false);
   // per-line reject reason being typed (lineId -> text)
@@ -980,7 +981,7 @@ export default function ClaimDetailPage() {
           {(status === "draft" || status === "rejected") && (isClaimant || isSuperUser) && (
             <Button
               variant="outline"
-              onClick={() => setLocation(`/claims/${claimId}/edit`)}
+              onClick={() => setLocation(claimType === "payment" ? `/payments/${claimId}/edit` : `/claims/${claimId}/edit`)}
               disabled={processing}
               data-testid="button-edit-draft"
             >

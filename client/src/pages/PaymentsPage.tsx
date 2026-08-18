@@ -465,7 +465,7 @@ export default function PaymentsPage() {
                         )}
                       </td>
                       <td className="px-4 py-3 text-right">
-                        <Link href={`/claims/${c.id}`}>
+                        <Link href={`/payments/${c.id}`}>
                           <Button size="sm" variant="ghost" data-testid={`button-view-${c.batch_no}`}>
                             <Eye size={14} className="mr-1" />
                             查看
