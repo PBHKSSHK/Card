@@ -156,6 +156,25 @@ FIELD DEFINITIONS (every line item MUST have ALL fields):
 - account_id: (string|null) Account/customer/order ID if shown, else null.
 
 ═══════════════════════════════════════════════════
+PAYMENT / BANK DETAILS (remittance instructions):
+═══════════════════════════════════════════════════
+Many invoices print the VENDOR's own receiving/payment instructions — how the
+buyer should pay them. Look for sections like "Payment Details", "Payment
+Method", "Bank Details", "Remittance", "付款方法", "銀行資料", "過數", "轉數快", "FPS".
+
+Extract into metadata.payment_info (use null for any field not shown):
+- bank_name: (string|null) bank name, e.g. "HSBC", "Hang Seng Bank", "中國銀行(香港)"
+- bank_account_number: (string|null) account number AS PRINTED (keep hyphens/spaces)
+- account_name: (string|null) beneficiary / account holder name (who to pay)
+- fps_id: (string|null) FPS 轉數快 ID (phone number / email / FPS ID) if shown
+- payment_method: "bank_transfer" if a bank account is shown; "fps" if only FPS
+  is shown; "cheque" if only a cheque payee is given; else null
+
+CRITICAL: these are the VENDOR's receiving details printed on the document.
+Do NOT invent values. Do NOT use the buyer's details. If the document shows no
+payment instructions at all, set metadata.payment_info = null.
+
+═══════════════════════════════════════════════════
 SPECIAL CASE — META / FACEBOOK ADS ONLY:
 ═══════════════════════════════════════════════════
 For Meta/Facebook Ads receipts:
@@ -211,7 +230,8 @@ Return JSON:
     "total_amount": 7027.00,
     "account_name": "Meta",
     "account_id": "511-10527110",
-    "receipt_number": "FBADS-511-10527110"
+    "receipt_number": "FBADS-511-10527110",
+    "payment_info": null
   }
 }
 
@@ -235,9 +255,18 @@ For non-Meta example:
     "total_amount": 165.68,
     "account_name": "Uber",
     "account_id": null,
-    "receipt_number": "P2510001293"
+    "receipt_number": "P2510001293",
+    "payment_info": {
+      "bank_name": "HSBC",
+      "bank_account_number": "004-567890-838",
+      "account_name": "ABC Production Limited",
+      "fps_id": null,
+      "payment_method": "bank_transfer"
+    }
   }
 }
+(payment_info here is only an example — extract it from the document's own
+remittance section; null when the document shows none.)
 
 CRITICAL: Return ONLY valid JSON. No markdown, no code fences, no explanation.`;
 

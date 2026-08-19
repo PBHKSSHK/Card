@@ -804,6 +804,19 @@ export default function NewClaimPage() {
       }
       if (inv?.amount != null && !isNaN(Number(inv.amount))) { setInvoiceAmount(String(inv.amount)); filled++; }
       if (inv?.currency) setInvoiceCurrency(String(inv.currency).toUpperCase());
+      // 發票如印有收款銀行資料 / FPS → 自動填最底嘅付款資料
+      const pay = (res.metadata as any)?.payment_info;
+      if (pay && typeof pay === "object") {
+        if (pay.bank_account_number) {
+          setPaymentMethod("bank_transfer");
+          setPayeeBankAccount(String(pay.bank_account_number)); filled++;
+          if (pay.bank_name) { setPayeeBank(String(pay.bank_name)); filled++; }
+        } else if (pay.fps_id) {
+          setPaymentMethod("fps");
+        }
+        if (pay.fps_id) { setPayeeFpsId(String(pay.fps_id)); filled++; }
+        if (pay.account_name) { setPayeeAccountName(String(pay.account_name)); filled++; }
+      }
       // 得一行空白明細 → 順手填埋金額
       setLines(prev => {
         if (prev.length === 1 && !prev[0].hkd_amount && !prev[0].original_amount && inv?.amount != null) {
@@ -820,7 +833,7 @@ export default function NewClaimPage() {
       toast({
         title: "發票解析完成 ✓",
         description: filled > 0
-          ? `已自動填咗 ${filled} 個欄位，請核對一次（尤其係金額同發票號）`
+          ? `已自動填咗 ${filled} 個欄位，請核對一次（尤其係金額、發票號同銀行戶口）`
           : "解析唔到欄位 — 請人手填寫，影像已加入附件",
       });
     } catch (err: any) {

@@ -316,6 +316,8 @@ export async function parseDocument(
       metadata: {
         vendor: md.vendor || result.data.vendor,
         total_amount: md.total_amount ?? result.data.total_amount,
+        // 發票上印嘅收款銀行資料 / FPS (付款申請自動填付款資料用)
+        payment_info: md.payment_info ?? result.data.payment_info ?? null,
       },
       rawText: text,
     };
