@@ -15,6 +15,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { usePagination, PaginationFooter } from "@/components/PaginationFooter";
 import {
   Receipt, Car, Plus, Filter, Calendar, User, CheckCircle2,
   Clock, XCircle, FileCheck, Send, Eye,
@@ -96,6 +97,8 @@ export default function ClaimsPage() {
     }
     return arr;
   }, [claims, filterType, filterStatus, filterPeriod, searchText]);
+
+  const pg = usePagination(filtered);
 
   const stats = useMemo(() => {
     const arr = claims || [];
@@ -219,7 +222,7 @@ export default function ClaimsPage() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((c) => {
+                {pg.pageItems.map((c) => {
                   const status = STATUS_LABELS[c.status] || STATUS_LABELS.draft;
                   const StatusIcon = status.icon;
                   return (
@@ -268,6 +271,9 @@ export default function ClaimsPage() {
                 })}
               </tbody>
             </table>
+            <div className="px-4 pb-3">
+              <PaginationFooter {...pg.footerProps} />
+            </div>
           </div>
         )}
       </CardContent></Card>

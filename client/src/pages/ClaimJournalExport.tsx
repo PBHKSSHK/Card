@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { usePagination, PaginationFooter } from "@/components/PaginationFooter";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Download, ChevronDown, ChevronRight, AlertCircle, Bus, Receipt, UploadCloud, Loader2 } from "lucide-react";
@@ -726,6 +727,7 @@ export default function ClaimJournalExport() {
     }
     return Array.from(m.entries());
   }, [journalEntries]);
+  const batchPg = usePagination(groupedByBatch, 20);
 
   // Unmapped list
   const unmappedList = useMemo(() => {
@@ -1027,7 +1029,7 @@ export default function ClaimJournalExport() {
               無 approved claim batch (要 status = approved / exported)
             </div>
           )}
-          {groupedByBatch.map(([batchNo, entries]) => {
+          {batchPg.pageItems.map(([batchNo, entries]) => {
             const expanded = expandedBatches.has(batchNo);
             const drSum = entries.reduce((s, e) => s + (e.debit || 0), 0);
             const crSum = entries.reduce((s, e) => s + (e.credit || 0), 0);
@@ -1096,6 +1098,7 @@ export default function ClaimJournalExport() {
               </div>
             );
           })}
+          <PaginationFooter {...batchPg.footerProps} />
         </CardContent>
       </Card>
     </div>

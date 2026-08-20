@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { usePagination, PaginationFooter } from "@/components/PaginationFooter";
 import { StatusBadge, formatCurrency } from "@/components/StatusBadge";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -1726,6 +1727,7 @@ export default function ReconQueue() {
     }),
     [baseFiltered, statusFilter, cardFilter]
   );
+  const tablePg = usePagination(tableFiltered, 50);
 
   // Build lookup maps for card-split view
   const invoiceMap = useMemo(() => {
@@ -2089,7 +2091,7 @@ export default function ReconQueue() {
                     </tr>
                   </thead>
                   <tbody>
-                    {tableFiltered.map(txn => {
+                    {tablePg.pageItems.map(txn => {
                       const isExpanded = expandedTxnRow === txn.transaction_id;
                       const invId = txnToInvoiceId.get(txn.transaction_id);
                       const matchedInv = invId ? invoiceMap.get(invId) : null;
@@ -2226,6 +2228,9 @@ export default function ReconQueue() {
                     })}
                   </tbody>
                 </table>
+                <div className="px-3 pb-2">
+                  <PaginationFooter {...tablePg.footerProps} />
+                </div>
               </div>
             )}
           </CardContent>

@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Upload, FileText, FileImage, FileSpreadsheet, AlertCircle, CheckCircle2, Loader2, Eye, Trash2, ChevronDown, ChevronRight, ShieldCheck, ShieldAlert, ExternalLink, StickyNote, Building2, FolderCode, Plus, X, Split, CreditCard } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { usePagination, PaginationFooter } from "@/components/PaginationFooter";
 import { useToast } from "@/hooks/use-toast";
 import { formatCategoryLabel } from "@/lib/utils";
 import { todayHK, currentMonthHK } from "@/lib/hkdate";
@@ -2303,9 +2304,6 @@ export default function UploadCentre() {
 
   const [searchFilter, setSearchFilter] = useState("");
   const [showDuplicatesOnly, setShowDuplicatesOnly] = useState(false);
-  // Upload History pagination
-  const [histPage, setHistPage] = useState(0);
-  const [histPerPage, setHistPerPage] = useState(20);
 
   const { data: recentBatches } = useQuery({
     queryKey: ["upload-batches"],
@@ -2374,10 +2372,9 @@ export default function UploadCentre() {
     });
   }, [recentBatches, searchFilter, showDuplicatesOnly, duplicateBatchIds]);
 
-  // History pagination slices (每頁顯示行數可以揀)
-  const histTotalPages = Math.max(1, Math.ceil(filteredBatches.length / histPerPage));
-  const histSafePage = Math.min(histPage, histTotalPages - 1);
-  const pagedBatches = filteredBatches.slice(histSafePage * histPerPage, (histSafePage + 1) * histPerPage);
+  // History pagination (全 app 統一 footer)
+  const histPg = usePagination(filteredBatches, 20);
+  const pagedBatches = histPg.pageItems;
 
   const handleRemoveBatch = useCallback(async (batchId: string) => {
     try {
@@ -2502,12 +2499,12 @@ export default function UploadCentre() {
                   type="text"
                   placeholder="Search file / period / last4..."
                   value={searchFilter}
-                  onChange={(e) => { setSearchFilter(e.target.value); setHistPage(0); }}
+                  onChange={(e) => { setSearchFilter(e.target.value); histPg.setPage(1); }}
                   className="text-xs px-2 py-1 border border-border rounded w-56 bg-background"
                   data-testid="input-search-batches"
                 />
                 <button
-                  onClick={() => { setShowDuplicatesOnly(!showDuplicatesOnly); setHistPage(0); }}
+                  onClick={() => { setShowDuplicatesOnly(!showDuplicatesOnly); histPg.setPage(1); }}
                   className={`text-xs px-2 py-1 rounded border ${
                     showDuplicatesOnly
                       ? "bg-amber-100 border-amber-300 text-amber-800"
@@ -2558,29 +2555,7 @@ export default function UploadCentre() {
                 </tbody>
               </table>
             </div>
-            {/* History pagination: Page X of Y (N total items) · 每頁顯示行數 */}
-            <div className="flex items-center justify-between gap-2 flex-wrap py-1.5 px-1 text-xs text-muted-foreground">
-              <div className="flex items-center gap-1.5">
-                <Button variant="outline" size="sm" className="h-6 px-2 text-xs"
-                  disabled={histSafePage === 0} onClick={() => setHistPage(histSafePage - 1)} data-testid="hist-prev-page">‹</Button>
-                <span className="tabular-nums">Page {histSafePage + 1} of {histTotalPages} ({filteredBatches.length} total items)</span>
-                <Button variant="outline" size="sm" className="h-6 px-2 text-xs"
-                  disabled={histSafePage >= histTotalPages - 1} onClick={() => setHistPage(histSafePage + 1)} data-testid="hist-next-page">›</Button>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span>showing</span>
-                <Select value={String(histPerPage)} onValueChange={(v) => { setHistPerPage(Number(v)); setHistPage(0); }}>
-                  <SelectTrigger className="h-6 w-20 text-xs" data-testid="hist-per-page"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="20">20</SelectItem>
-                    <SelectItem value="50">50</SelectItem>
-                    <SelectItem value="100">100</SelectItem>
-                    <SelectItem value="200">200</SelectItem>
-                  </SelectContent>
-                </Select>
-                <span>items per page</span>
-              </div>
-            </div>
+            <PaginationFooter {...histPg.footerProps} />
           </CardContent>
         </Card>
       )}

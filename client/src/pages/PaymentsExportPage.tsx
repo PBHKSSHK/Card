@@ -16,6 +16,7 @@ import { useToast } from "@/hooks/use-toast";
 import { csvText, csvAmount } from "@/lib/csv";
 import { todayHK } from "@/lib/hkdate";
 import { HandCoins, Loader2, UploadCloud, Download } from "lucide-react";
+import { usePagination, PaginationFooter } from "@/components/PaginationFooter";
 
 interface PaymentBatch {
   id: string;
@@ -91,6 +92,7 @@ export default function PaymentsExportPage() {
     () => (payments || []).filter(c => c.status === "exported"),
     [payments],
   );
+  const exportedPg = usePagination(exported);
 
   const toggleSelect = (id: string, on: boolean) => {
     setSelectedIds(prev => {
@@ -307,7 +309,7 @@ export default function PaymentsExportPage() {
           {exported.length === 0 && (
             <div className="text-sm text-muted-foreground py-2 text-center">未有已入 NetSuite 嘅批次</div>
           )}
-          {exported.slice(0, 50).map(b => (
+          {exportedPg.pageItems.map(b => (
             <div key={b.id} className="flex items-center gap-2 text-xs px-1 py-1">
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 font-medium">已 post 過 ✓</span>
               <span className="font-mono">{b.batch_no}</span>
@@ -318,6 +320,7 @@ export default function PaymentsExportPage() {
               </span>
             </div>
           ))}
+          <PaginationFooter {...exportedPg.footerProps} />
         </CardContent>
       </Card>
     </div>

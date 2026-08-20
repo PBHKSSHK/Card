@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Landmark, Loader2, Play, RefreshCw, Search } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import type { BankTransaction, NsGlEntry, BankReconResult } from "@shared/schema";
+import { usePagination, PaginationFooter } from "@/components/PaginationFooter";
 
 // Subsidiary display mapping
 const SUBSIDIARY_MAP: Record<string, string> = {
@@ -263,8 +264,6 @@ export default function BankRecon() {
   const [view, setView] = useState<"todo" | "done">("todo");
   const [running, setRunning] = useState(false);
   const [syncing, setSyncing] = useState(false);
-  const [page, setPage] = useState(0);
-  const PER_PAGE = 15;
   const { toast } = useToast();
   const qc = useQueryClient();
 
@@ -356,8 +355,9 @@ export default function BankRecon() {
   const todo = (transactions || []).filter(t => !isDone(t));
   const done = (transactions || []).filter(isDone);
   const rows = view === "todo" ? todo : done;
-  const totalPages = Math.max(1, Math.ceil(rows.length / PER_PAGE));
-  const pageRows = rows.slice(Math.min(page, totalPages - 1) * PER_PAGE, (Math.min(page, totalPages - 1) + 1) * PER_PAGE);
+  const pg = usePagination(rows, 20);
+  const pageRows = pg.pageItems;
+  const setPage = (p: number) => pg.setPage(p + 1); // 舊 call sites 用 0-based
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["bank-transactions"] });
@@ -570,13 +570,7 @@ export default function BankRecon() {
       )}
 
       {/* Pagination */}
-      {rows.length > PER_PAGE && (
-        <div className="flex items-center justify-center gap-2 text-xs text-muted-foreground">
-          <Button variant="outline" size="sm" className="h-7 px-2" disabled={page === 0} onClick={() => setPage(p => p - 1)}>‹</Button>
-          <span className="tabular-nums">Page {Math.min(page, totalPages - 1) + 1} of {totalPages} ({rows.length} items)</span>
-          <Button variant="outline" size="sm" className="h-7 px-2" disabled={page >= totalPages - 1} onClick={() => setPage(p => p + 1)}>›</Button>
-        </div>
-      )}
+      <PaginationFooter {...pg.footerProps} />
     </div>
   );
 }

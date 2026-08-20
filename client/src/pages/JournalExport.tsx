@@ -4,6 +4,7 @@ import { supabase } from "@/lib/supabase";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { usePagination, PaginationFooter } from "@/components/PaginationFooter";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Download, ChevronDown, ChevronRight, AlertCircle, Package, Loader2, CloudUpload } from "lucide-react";
@@ -1009,6 +1010,7 @@ export default function JournalExport() {
     }
     return Array.from(map.entries());
   }, [journalEntries]);
+  const groupPg = usePagination(cardGroups, 20);
 
   // ⭐ 列出哪 9 條 unmapped + locate key
   // key = `${cardholder}__${indexInCard}` (狨後畫來 row ref + scroll)
@@ -1447,7 +1449,7 @@ export default function JournalExport() {
       )}
 
       {/* Per-card details */}
-      {cardGroups.map(([cardholder, entries]) => {
+      {groupPg.pageItems.map(([cardholder, entries]) => {
         const expanded = expandedCards.has(cardholder);
         const extId = externalIdOf(cardholder);
         const postedNsId = extId != null && postedMap.has(extId) ? postedMap.get(extId) : undefined;
@@ -1514,6 +1516,7 @@ export default function JournalExport() {
           </Card>
         );
       })}
+      <PaginationFooter {...groupPg.footerProps} />
     </div>
   );
 }

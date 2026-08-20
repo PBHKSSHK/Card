@@ -17,6 +17,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { usePagination, PaginationFooter } from "@/components/PaginationFooter";
 import { useToast } from "@/hooks/use-toast";
 import {
   HandCoins, Plus, Filter, CheckCircle2, Clock, XCircle, FileCheck,
@@ -129,6 +130,8 @@ export default function PaymentsPage() {
     }
     return arr;
   }, [payments, filterStatus, filterPayeeType, filterPeriod, searchText]);
+
+  const pg = usePagination(filtered);
 
   const stats = useMemo(() => {
     const arr = payments || [];
@@ -270,7 +273,7 @@ export default function PaymentsPage() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((c) => {
+                {pg.pageItems.map((c) => {
                   const status = STATUS_LABELS[c.status] || STATUS_LABELS.draft;
                   const StatusIcon = status.icon;
                   return (
@@ -323,6 +326,9 @@ export default function PaymentsPage() {
                 })}
               </tbody>
             </table>
+            <div className="px-4 pb-3">
+              <PaginationFooter {...pg.footerProps} />
+            </div>
           </div>
         )}
       </CardContent></Card>
