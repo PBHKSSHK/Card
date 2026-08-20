@@ -45,7 +45,7 @@ function b64urlJson(seg: string): any {
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-cron-secret',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
@@ -53,7 +53,7 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
   const svc = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
   try {
-    // ---- auth: owner/admin or service role ----
+    // ---- auth: owner/admin、service role，或 pg_cron 嘅 x-cron-secret ----
     const authz = req.headers.get('Authorization') || '';
     const jwt = authz.replace(/^Bearer\s+/i, '');
     const claims = jwt.split('.').length === 3 ? b64urlJson(jwt.split('.')[1]) : {};
@@ -61,6 +61,13 @@ Deno.serve(async (req) => {
     if (!okAuth && claims.sub) {
       const { data: prof } = await svc.from('user_profiles').select('role').eq('user_id', claims.sub).maybeSingle();
       okAuth = prof != null && ['owner', 'admin'].includes(prof.role);
+    }
+    if (!okAuth) {
+      const cronSecret = req.headers.get('x-cron-secret');
+      if (cronSecret) {
+        const { data: expected } = await svc.rpc('ns_get_cron_secret');
+        okAuth = !!expected && cronSecret === expected;
+      }
     }
     if (!okAuth) return new Response(JSON.stringify({ error: 'forbidden: owner/admin only' }), { status: 403, headers: CORS });
 

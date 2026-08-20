@@ -70,15 +70,23 @@ export default function PaymentsPage() {
   const [searchText, setSearchText] = useState("");
   const [syncingVendors, setSyncingVendors] = useState(false);
 
-  // 同步 NetSuite vendor 名冊 (收款人揀選來源) — owner/admin only
+  // 同步 NetSuite 參考資料 (vendors + projects/customers) — owner/admin only。
+  // 每日 03:00 HKT 有 pg_cron 自動同步，呢個掣係即時手動 refresh。
   const handleSyncVendors = async () => {
     setSyncingVendors(true);
     try {
-      const { data, error } = await supabase.functions.invoke("netsuite-sync-vendors", { body: {} });
-      if (error) throw new Error(error.message || "Edge Function 呼叫失敗");
-      if (data?.error) throw new Error(data.error);
-      toast({ title: "Vendor 名冊已同步 ✓", description: `共 ${data.fetched} 個 active vendors，收起 ${data.deactivated} 個已停用` });
+      const { data: v, error: vErr } = await supabase.functions.invoke("netsuite-sync-vendors", { body: {} });
+      if (vErr) throw new Error(vErr.message || "Edge Function 呼叫失敗");
+      if (v?.error) throw new Error(v.error);
+      const { data: p, error: pErr } = await supabase.functions.invoke("netsuite-sync-projects", { body: {} });
+      if (pErr) throw new Error(pErr.message || "Edge Function 呼叫失敗");
+      if (p?.error) throw new Error(p.error);
+      toast({
+        title: "NetSuite 已同步 ✓",
+        description: `${v.fetched} 個 vendors（收起 ${v.deactivated}）· ${p.projects} 個 projects（新 ${p.new_projects}，收起 ${p.deactivated}）· ${p.customers_mapped} 個 customers`,
+      });
       qc.invalidateQueries({ queryKey: ["ns_vendor_directory"] });
+      qc.invalidateQueries({ predicate: (q) => String(q.queryKey[0] || "").startsWith("ns_project_codes") || q.queryKey[0] === "ns-project-codes" });
     } catch (err: any) {
       toast({ title: "同步失敗", description: err.message, variant: "destructive" });
     }
@@ -151,9 +159,9 @@ export default function PaymentsPage() {
         <div className="flex items-center gap-2">
           {isSuperUser && (
             <Button variant="ghost" size="sm" onClick={handleSyncVendors} disabled={syncingVendors}
-              title="由 NetSuite 更新收款人名冊 (供應商 + 自由工作者)" data-testid="button-sync-vendors">
+              title="由 NetSuite 更新收款人名冊 + project codes / customers（每日 03:00 亦會自動同步）" data-testid="button-sync-vendors">
               {syncingVendors ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-1.5" />}
-              同步 Vendors
+              同步 NetSuite
             </Button>
           )}
           <Link href="/claims/new/payment_freelancer">

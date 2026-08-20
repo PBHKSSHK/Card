@@ -620,6 +620,7 @@ export default function ReconQueue() {
       const { data, error } = await supabase
         .from("ns_project_codes")
         .select("*")
+        .eq("is_active", true) // NetSuite 已停用嘅 project 唔再顯示
         .order("project_id", { ascending: true });
       if (error) {
         console.warn("[ReconQueue] ns_project_codes unavailable:", error.message);

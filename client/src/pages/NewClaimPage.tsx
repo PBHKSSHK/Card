@@ -489,6 +489,7 @@ export default function NewClaimPage() {
       const { data, error } = await supabase
         .from("ns_project_codes")
         .select("id, project_id, project_name, charge_to, entity_name")
+        .eq("is_active", true) // NetSuite 已停用嘅 project 唔再顯示
         .order("project_id");
       if (error) {
         console.warn("[NewClaimPage] ns_project_codes:", error.message);

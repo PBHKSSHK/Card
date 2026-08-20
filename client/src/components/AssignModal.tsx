@@ -80,6 +80,7 @@ export default function AssignModal({ transaction, onClose, onSaved }: Props) {
       const { data, error } = await supabase
         .from("ns_project_codes")
         .select("*")
+        .eq("is_active", true) // NetSuite 已停用嘅 project 唔再顯示
         .order("project_id");
       if (error) throw error;
       return data as NsProjectCode[];
