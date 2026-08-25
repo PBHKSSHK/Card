@@ -111,10 +111,23 @@ type ParsedRow = {
 
 // HSBC Business Direct 月結單一份 PDF 有齊三個戶口 section —
 // 每行交易按 section 對應返獨立戶口名，入落 bank_transactions.bank_account
+// (bank_accounts master 搵唔到對應行先用呢個 fallback)
 const ACCOUNT_LABEL_MAP: Record<string, string> = {
   "HKD Current": "HSBC Business Direct HKD Current 港元往來",
   "HKD Savings": "HSBC Business Direct HKD Savings 港元儲蓄",
   "Foreign Currency Savings": "HSBC Business Direct Foreign Currency Savings 外幣儲蓄",
+};
+
+// 各公司銀行戶口 master (bank_accounts 表，NetSuite GL account 對應)
+type BankAcct = {
+  id: string;
+  gl_account_code: string;
+  gl_account_name: string;
+  subsidiary_code: string;
+  bank: string;
+  account_label: string | null;
+  account_number: string | null;
+  currency: string;
 };
 
 function fmt(n: number | null | undefined): string {
@@ -131,6 +144,46 @@ export default function BankUploadCentre() {
   const [subsidiary, setSubsidiary] = useState("");
   const [bankName, setBankName] = useState("");
   const [bankAccount, setBankAccount] = useState("");
+  // 揀公司後由 bank_accounts master 揀戶口 ("manual" = 自行輸入)
+  const [acctId, setAcctId] = useState("");
+
+  const { data: bankAccts = [] } = useQuery({
+    queryKey: ["bank_accounts_master"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("bank_accounts")
+        .select("id, gl_account_code, gl_account_name, subsidiary_code, bank, account_label, account_number, currency")
+        .eq("is_active", true)
+        .order("gl_account_code");
+      if (error) return [];
+      return (data || []) as BankAcct[];
+    },
+  });
+  const subAccts = useMemo(
+    () => bankAccts.filter((a) => a.subsidiary_code === subsidiary),
+    [bankAccts, subsidiary],
+  );
+  const selectedAcct = useMemo(
+    () => subAccts.find((a) => a.id === acctId) || null,
+    [subAccts, acctId],
+  );
+
+  // PDF 多戶口 section → 該公司對應嘅戶口 (HSBC Business Direct 優先)
+  const resolveSectionAcct = (label: string, cur?: string): BankAcct | null => {
+    const l = label.toLowerCase();
+    const c = (cur || "").toUpperCase();
+    const pool = subAccts.filter((a) => a.bank === "HSBC");
+    const cand = pool.length > 0 ? pool : subAccts;
+    const isFcy = l.includes("foreign") || (!!c && c !== "HKD");
+    if (isFcy) return cand.find((a) => a.currency !== "HKD") || null;
+    if (l.includes("current")) {
+      return cand.find((a) => a.currency === "HKD" && (a.account_label || "").toLowerCase().includes("current")) || null;
+    }
+    if (l.includes("saving")) {
+      return cand.find((a) => a.currency === "HKD" && ((a.account_label || "").toLowerCase().includes("saving") || (a.account_label || "").includes("儲蓄"))) || null;
+    }
+    return cand.find((a) => (a.account_label || "").toLowerCase().includes(l)) || null;
+  };
   const [file, setFile] = useState<File | null>(null);
   const [grid, setGrid] = useState<any[][]>([]);       // raw cells below the header row
   const [headers, setHeaders] = useState<string[]>([]); // detected header row
@@ -355,25 +408,30 @@ export default function BankUploadCentre() {
       }).select("id").single();
       if (bErr) throw bErr;
 
-      // 多戶口月結單 (HSBC Business Direct)：每行按 section 對應獨立戶口名；
-      // 單戶口照用表頭輸入嘅戶口號碼
-      const records = rows.map((r) => ({
-        batch_id: batch.id,
-        subsidiary,
-        bank_name: bankName || null,
-        bank_account: r.account_label
-          ? (ACCOUNT_LABEL_MAP[r.account_label] || `${bankAccount ? bankAccount + " " : ""}${r.account_label}`)
-          : (bankAccount || null),
-        txn_date: r.txn_date,
-        description: r.description,
-        reference: r.reference,
-        debit: r.debit,
-        credit: r.credit,
-        balance: r.balance,
-        currency: r.currency || "HKD",
-        period_month: r.txn_date.slice(0, 7),
-        user_id: user?.id ?? null,
-      }));
+      // 多戶口月結單 (HSBC Business Direct)：每行按 section 對應 bank_accounts
+      // master 嘅戶口 (label + GL account code)；單戶口用表頭揀嘅戶口。
+      const records = rows.map((r) => {
+        const sectionAcct = r.account_label ? resolveSectionAcct(r.account_label, r.currency) : null;
+        const acct = sectionAcct || selectedAcct;
+        return {
+          batch_id: batch.id,
+          subsidiary,
+          bank_name: acct?.bank || bankName || null,
+          bank_account: r.account_label
+            ? (sectionAcct?.account_label || ACCOUNT_LABEL_MAP[r.account_label] || r.account_label)
+            : (acct?.account_number || bankAccount || null),
+          gl_account_code: acct?.gl_account_code || null,
+          txn_date: r.txn_date,
+          description: r.description,
+          reference: r.reference,
+          debit: r.debit,
+          credit: r.credit,
+          balance: r.balance,
+          currency: r.currency || acct?.currency || "HKD",
+          period_month: r.txn_date.slice(0, 7),
+          user_id: user?.id ?? null,
+        };
+      });
       for (let i = 0; i < records.length; i += 500) {
         const { error } = await supabase.from("bank_transactions").insert(records.slice(i, i + 500));
         if (error) throw error;
@@ -478,7 +536,7 @@ export default function BankUploadCentre() {
           <div className="flex gap-3 flex-wrap">
             <div className="space-y-1">
               <label className="text-xs text-muted-foreground">公司 Subsidiary *</label>
-              <Select value={subsidiary} onValueChange={setSubsidiary}>
+              <Select value={subsidiary} onValueChange={(v) => { setSubsidiary(v); setAcctId(""); setBankName(""); setBankAccount(""); }}>
                 <SelectTrigger className="w-[240px]" data-testid="select-bank-subsidiary">
                   <SelectValue placeholder="揀公司…" />
                 </SelectTrigger>
@@ -490,15 +548,41 @@ export default function BankUploadCentre() {
               </Select>
             </div>
             <div className="space-y-1">
-              <label className="text-xs text-muted-foreground">銀行 Bank</label>
-              <Input className="w-[180px]" placeholder="e.g. Hang Seng" value={bankName}
-                onChange={(e) => setBankName(e.target.value)} data-testid="input-bank-name" />
+              <label className="text-xs text-muted-foreground">銀行戶口 Bank Account</label>
+              <Select value={acctId || undefined} onValueChange={(v) => {
+                setAcctId(v);
+                const a = subAccts.find((x) => x.id === v);
+                setBankName(a ? a.bank : "");
+                setBankAccount(a ? (a.account_number || "") : "");
+              }} disabled={!subsidiary}>
+                <SelectTrigger className="w-[380px]" data-testid="select-bank-account">
+                  <SelectValue placeholder={subsidiary ? "揀戶口…" : "先揀公司"} />
+                </SelectTrigger>
+                <SelectContent>
+                  {subAccts.map((a) => (
+                    <SelectItem key={a.id} value={a.id}>
+                      {a.bank} · {a.account_label || a.gl_account_name}{a.account_number ? ` (${a.account_number})` : ""}{a.currency !== "HKD" ? ` · ${a.currency}` : ""}
+                    </SelectItem>
+                  ))}
+                  <SelectItem value="manual">其他 — 自行輸入</SelectItem>
+                </SelectContent>
+              </Select>
+              {selectedAcct && (
+                <div className="text-[10px] text-muted-foreground">NetSuite: {selectedAcct.gl_account_name}</div>
+              )}
             </div>
-            <div className="space-y-1">
-              <label className="text-xs text-muted-foreground">戶口號碼 Account</label>
-              <Input className="w-[200px]" placeholder="e.g. 123-456789-001" value={bankAccount}
-                onChange={(e) => setBankAccount(e.target.value)} data-testid="input-bank-account" />
-            </div>
+            {acctId === "manual" && (<>
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground">銀行 Bank</label>
+                <Input className="w-[180px]" placeholder="e.g. Hang Seng" value={bankName}
+                  onChange={(e) => setBankName(e.target.value)} data-testid="input-bank-name" />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground">戶口號碼 Account</label>
+                <Input className="w-[200px]" placeholder="e.g. 123-456789-001" value={bankAccount}
+                  onChange={(e) => setBankAccount(e.target.value)} data-testid="input-bank-account" />
+              </div>
+            </>)}
           </div>
 
           {/* Dropzone */}
@@ -542,19 +626,25 @@ export default function BankUploadCentre() {
               {pdfBalanceDiff === 0 && (
                 <div className="text-emerald-600 dark:text-emerald-400">✓ 對數檢查通過：期初 + 存入 − 支出 = 期末結餘</div>
               )}
-              {/* 多戶口月結單 (HSBC Business Direct) — 逐個戶口 section 檢查 */}
-              {pdfAccountChecks?.map((c, i) => (
-                <div key={i} className={
-                  c.diff === 0 ? "text-emerald-600 dark:text-emerald-400"
-                  : c.diff != null ? "text-amber-600 dark:text-amber-500"
-                  : ""
-                }>
-                  {c.diff === 0 ? "✓" : c.diff != null ? "⚠" : "·"}{" "}
-                  {ACCOUNT_LABEL_MAP[c.label] || c.label}{c.currency ? ` (${c.currency})` : ""} — {c.count} 行
-                  {c.diff != null && c.diff !== 0 && <>，對數差 {fmt(Math.abs(c.diff))} — 請核對呢個戶口嘅行</>}
-                  {c.diff === 0 && <>，對數平</>}
-                </div>
-              ))}
+              {/* 多戶口月結單 (HSBC Business Direct) — 逐個戶口 section 檢查 + 對應 GL 戶口 */}
+              {pdfAccountChecks?.map((c, i) => {
+                const acct = resolveSectionAcct(c.label, c.currency);
+                return (
+                  <div key={i} className={
+                    c.diff === 0 ? "text-emerald-600 dark:text-emerald-400"
+                    : c.diff != null ? "text-amber-600 dark:text-amber-500"
+                    : ""
+                  }>
+                    {c.diff === 0 ? "✓" : c.diff != null ? "⚠" : "·"}{" "}
+                    {acct?.account_label || ACCOUNT_LABEL_MAP[c.label] || c.label}{c.currency ? ` (${c.currency})` : ""} — {c.count} 行
+                    {c.diff != null && c.diff !== 0 && <>，對數差 {fmt(Math.abs(c.diff))} — 請核對呢個戶口嘅行</>}
+                    {c.diff === 0 && <>，對數平</>}
+                    {acct
+                      ? <span className="text-muted-foreground"> → NetSuite {acct.gl_account_code}{acct.account_number ? ` (${acct.account_number})` : ""}</span>
+                      : <span className="text-amber-600 dark:text-amber-500"> → 未對應到公司戶口 master，請檢查有冇揀啱公司</span>}
+                  </div>
+                );
+              })}
             </div>
           )}
 
