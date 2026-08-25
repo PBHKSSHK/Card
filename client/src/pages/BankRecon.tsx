@@ -339,14 +339,16 @@ export default function BankRecon() {
     return m;
   }, [reconResults]);
 
-  // Candidates per bank txn: same subsidiary + equal amount, nearest date first
+  // Candidates per bank txn: same subsidiary + 同月 + equal amount, nearest date first
   const candidatesFor = useMemo(() => {
     const pool = glPool || [];
     return (txn: BankTransaction): NsGlEntry[] => {
       const amt = amtOf(txn);
       if (!amt) return [];
+      const txnMonth = (txn.txn_date || "").slice(0, 7);
       const c = pool.filter(g =>
         (g.subsidiary === txn.subsidiary || !txn.subsidiary) &&
+        (g.txn_date || "").slice(0, 7) === txnMonth &&
         Math.abs(amtOf(g) - amt) < 0.01
       );
       const t0 = new Date(txn.txn_date).getTime();
@@ -549,7 +551,7 @@ export default function BankRecon() {
       <div className="hidden lg:grid grid-cols-[1fr_44px_1fr] text-[11px] text-muted-foreground px-1">
         <span>Review your bank statement lines…</span>
         <span></span>
-        <span>…then match with your NetSuite records</span>
+        <span>…then match with your NetSuite records（只列同月紀錄）</span>
       </div>
 
       {/* Rows */}

@@ -472,12 +472,15 @@ export async function runBankMatching(
     if (txnIsCharges && claimedFeeTxnIds.has(txn.id)) continue;
 
     let bestMatch: any = null;
+    // Bank statement 行同 NetSuite 紀錄必須同月先可以配對
+    const txnMonth = (txn.txn_date || "").slice(0, 7);
 
     // ── Stage 1: Match against NS GL entries ──
     if (glEntries?.length) {
       for (const gl of glEntries) {
         if (claimedGlIds.has(gl.id)) continue;
         if (!glMatchesSubsidiary(gl.subsidiary, txn.subsidiary)) continue;
+        if (!txnMonth || (gl.txn_date || "").slice(0, 7) !== txnMonth) continue;
 
         const glIsDebit = (gl.debit ?? 0) > 0;
         const glAmount = glIsDebit ? Math.abs(gl.debit!) : Math.abs(gl.credit ?? 0);
