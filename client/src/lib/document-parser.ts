@@ -88,32 +88,46 @@ async function fileToBase64(file: File): Promise<string> {
 
 /**
  * Convert PDF pages to images for OCR (for scanned PDFs).
- * Uses scale 1.5 and JPEG quality 0.7 to keep payload under 6 MB.
+ * Starts at scale 1.5 / JPEG 0.7; if the total base64 payload is too big
+ * (long bank statements etc. can abort the upload with "Failed to fetch"),
+ * re-renders everything at a lower scale/quality before giving up.
  */
 async function pdfToImages(file: File): Promise<string[]> {
   const arrayBuffer = await file.arrayBuffer();
   const typedArray = new Uint8Array(arrayBuffer);
   const pdf = await pdfjsLib.getDocument(typedArray).promise;
 
-  const images: string[] = [];
-  const scale = 1.5;
-  const jpegQuality = 0.7;
+  const renderAll = async (scale: number, jpegQuality: number): Promise<string[]> => {
+    const images: string[] = [];
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const viewport = page.getViewport({ scale });
 
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i);
-    const viewport = page.getViewport({ scale });
+      const canvas = document.createElement("canvas");
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      const ctx = canvas.getContext("2d")!;
 
-    const canvas = document.createElement("canvas");
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
-    const ctx = canvas.getContext("2d")!;
+      await page.render({ canvas, canvasContext: ctx, viewport }).promise;
+      const dataUrl = canvas.toDataURL("image/jpeg", jpegQuality);
+      console.log(`[CardRecon] Page ${i}: ${(dataUrl.length / 1024).toFixed(0)} KB base64 (scale ${scale})`);
+      images.push(dataUrl);
+    }
+    return images;
+  };
 
-    await page.render({ canvas, canvasContext: ctx, viewport }).promise;
-    const dataUrl = canvas.toDataURL("image/jpeg", jpegQuality);
-    console.log(`[CardRecon] Page ${i}: ${(dataUrl.length / 1024).toFixed(0)} KB base64`);
-    images.push(dataUrl);
+  let images = await renderAll(1.5, 0.7);
+  let total = images.reduce((s, img) => s + img.length, 0);
+  if (total > 6 * 1024 * 1024) {
+    console.warn(`[CardRecon] Image payload ${(total / 1024 / 1024).toFixed(1)} MB > 6 MB — re-rendering at lower quality`);
+    images = await renderAll(1.1, 0.55);
+    total = images.reduce((s, img) => s + img.length, 0);
   }
-
+  if (total > 15 * 1024 * 1024) {
+    throw new Error(
+      `PDF 有 ${pdf.numPages} 頁，壓縮後仍然 ${(total / 1024 / 1024).toFixed(1)} MB — 太大上載唔到。請將 PDF 分拆做幾份再試`
+    );
+  }
   return images;
 }
 
@@ -249,19 +263,35 @@ export async function parseDocument(
   });
   console.log(`[CardRecon] Sending to Edge Function: mode=${images ? 'vision' : 'text'}, payload=${(payload.length / 1024 / 1024).toFixed(2)} MB`);
 
-  // Retry logic for rate-limited or transient errors
+  // Retry logic for rate-limited or transient errors.
+  // fetch() 本身 reject ("Failed to fetch" — 斷線 / 上載中途 abort) 都要 retry，
+  // 全部失敗就報埋 payload 大小方便斷症 (通常係檔案太大)。
   let response: Response | null = null;
   const maxRetries = 3;
+  const payloadDesc = `${(payload.length / 1024 / 1024).toFixed(1)} MB${images ? ` (${images.length} 頁圖)` : " (文字)"}`;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    response = await fetch(`${supabaseUrl}/functions/v1/parse-document`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${accessToken}`,
-        apikey: anonKey,
-      },
-      body: payload,
-    });
+    try {
+      response = await fetch(`${supabaseUrl}/functions/v1/parse-document`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+          apikey: anonKey,
+        },
+        body: payload,
+      });
+    } catch (netErr: any) {
+      console.warn(`[CardRecon] fetch rejected (attempt ${attempt + 1}/${maxRetries + 1}):`, netErr);
+      if (attempt < maxRetries) {
+        const waitSec = (attempt + 1) * 2 + Math.random();
+        onProgress?.(`網絡中斷，${Math.ceil(waitSec)} 秒後重試…`);
+        await new Promise((r) => setTimeout(r, waitSec * 1000));
+        continue;
+      }
+      throw new Error(
+        `網絡上載失敗 — payload ${payloadDesc}。請檢查網絡；如果檔案太大，請將 PDF 分拆再試`
+      );
+    }
 
     if (response.ok) break;
 
