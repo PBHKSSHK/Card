@@ -23,10 +23,18 @@ const SUBSIDIARY_MAP: Record<string, string> = {
   JS: "Jervois Solution",
 };
 
-const MONTHS = Array.from({ length: 6 }, (_, i) => {
-  const d = new Date(); d.setMonth(d.getMonth() - i);
-  return d.toISOString().slice(0, 7);
-});
+// Period 選項：由 2025-07 (開始用系統嗰月) 到而家，新月份排先
+const MONTHS = (() => {
+  const out: string[] = [];
+  const start = new Date(2025, 6, 1); // 2025-07
+  const d = new Date();
+  d.setDate(1);
+  while (d >= start) {
+    out.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+    d.setMonth(d.getMonth() - 1);
+  }
+  return out;
+})();
 
 function fmt(n: number | null | undefined): string {
   if (n == null) return "";
