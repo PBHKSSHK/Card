@@ -82,16 +82,21 @@ function normalizeDate(v: any): string | null {
   return null;
 }
 
-// "1,234.56" / "(1,234.56)" / "1234.56 CR" → number (or null)
+// "1,234.56" / "(1,234.56)" / "1234.56 CR" / "36,791.87-" (尾隨負號) → number (or null)
 function normalizeAmount(v: any): number | null {
   if (v == null || v === "") return null;
   if (typeof v === "number") return isFinite(v) ? v : null;
-  let s = String(v).replace(/[,\s]|HKD|HK\$|\$/gi, "").trim();
+  let s = String(v).replace(/[−–]/g, "-").replace(/[,\s ]|HKD|HK\$|\$/gi, "").trim();
   if (!s) return null;
   let neg = false;
   if (/^\(.*\)$/.test(s)) { neg = true; s = s.slice(1, -1); }
   if (/DR$/i.test(s)) { neg = true; s = s.replace(/DR$/i, ""); }
   s = s.replace(/CR$/i, "");
+  // 部分銀行匯出 (HSBC text 格式) 負號放喺尾：36,791.87-
+  if (/-$/.test(s)) { neg = true; s = s.slice(0, -1); }
+  // 尾隨 D / C 記號 (debit / credit)
+  if (/\dD$/i.test(s)) { neg = true; s = s.slice(0, -1); }
+  else if (/\dC$/i.test(s)) { s = s.slice(0, -1); }
   const n = parseFloat(s);
   if (!isFinite(n)) return null;
   return neg ? -n : n;
@@ -421,6 +426,16 @@ export default function BankUploadCentre() {
   }, [pdfRows, pdfMeta]);
 
   const hasMultiAccounts = !!pdfRows?.some((r) => r.account_label);
+
+  // 自動解析 (PDF / 多 worksheet) 嘅行如果支出/存入方向錯，可以逐行調轉
+  const flipRow = (idx: number) => {
+    setPdfRows((prev) => {
+      if (!prev || !prev[idx]) return prev;
+      const next = [...prev];
+      next[idx] = { ...next[idx], debit: next[idx].credit, credit: next[idx].debit };
+      return next;
+    });
+  };
 
   // ---- import ----
   const importMutation = useMutation({
@@ -757,6 +772,7 @@ export default function BankUploadCentre() {
                       <th className="text-right px-2 py-1.5 font-medium">支出</th>
                       <th className="text-right px-2 py-1.5 font-medium">存入</th>
                       <th className="text-right px-2 py-1.5 font-medium">結餘</th>
+                      {pdfRows && <th className="w-8"></th>}
                     </tr>
                   </thead>
                   <tbody>
@@ -773,10 +789,18 @@ export default function BankUploadCentre() {
                         <td className="px-2 py-1 text-right tabular-nums text-red-600 dark:text-red-400">{fmt(r.debit)}</td>
                         <td className="px-2 py-1 text-right tabular-nums text-emerald-600 dark:text-emerald-400">{fmt(r.credit)}</td>
                         <td className="px-2 py-1 text-right tabular-nums text-muted-foreground">{fmt(r.balance)}</td>
+                        {pdfRows && (
+                          <td className="px-1 py-1 text-center">
+                            <button type="button" title="支出 / 存入 調轉"
+                              className="text-muted-foreground hover:text-foreground text-xs"
+                              onClick={() => flipRow((previewPg.page - 1) * previewPg.perPage + i)}
+                              data-testid={`flip-row-${i}`}>⇄</button>
+                          </td>
+                        )}
                       </tr>
                     ))}
                     {rows.length === 0 && (
-                      <tr><td colSpan={hasMultiAccounts ? 7 : 6} className="text-center text-muted-foreground py-4">
+                      <tr><td colSpan={(hasMultiAccounts ? 7 : 6) + (pdfRows ? 1 : 0)} className="text-center text-muted-foreground py-4">
                         未有可入庫嘅行 — 檢查上面欄位對應 (日期 + 支出/存入/金額 必須有)
                       </td></tr>
                     )}
