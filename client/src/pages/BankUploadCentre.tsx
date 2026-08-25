@@ -135,6 +135,52 @@ function fmt(n: number | null | undefined): string {
   return n.toLocaleString("en-HK", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+// 一個 grid 度搵表頭行 (bank exports 表頭上面成日有 preamble)
+function detectHeader(rows: any[][]): { hdr: string[]; mapping: FieldKey[]; grid: any[][] } | null {
+  let headerIdx = -1;
+  for (let i = 0; i < Math.min(rows.length, 30); i++) {
+    const hits = (rows[i] || []).filter((c) => guessField(String(c ?? "")) !== "ignore").length;
+    if (hits >= 2) { headerIdx = i; break; }
+  }
+  if (headerIdx < 0) return null;
+  const hdr = (rows[headerIdx] || []).map((c) => String(c ?? "").trim());
+  return {
+    hdr,
+    mapping: hdr.map(guessField),
+    grid: rows.slice(headerIdx + 1).filter((r) => (r || []).some((c) => c !== "" && c != null)),
+  };
+}
+
+// grid + 欄位對應 → 交易行。單一 Amount 欄自動拆 debit/credit (正=存入、負=支出)
+function deriveRowsFromGrid(grid: any[][], mapping: FieldKey[]): { rows: ParsedRow[]; skipped: number } {
+  const col = (k: FieldKey) => mapping.indexOf(k);
+  const iDate = col("date"), iDesc = col("description"), iRef = col("reference");
+  const iDebit = col("debit"), iCredit = col("credit"), iBal = col("balance"), iAmt = col("amount");
+  const out: ParsedRow[] = [];
+  let skip = 0;
+  if (iDate < 0) return { rows: out, skipped: 0 };
+  for (const r of grid) {
+    const txn_date = normalizeDate(r[iDate]);
+    let debit = iDebit >= 0 ? normalizeAmount(r[iDebit]) : null;
+    let credit = iCredit >= 0 ? normalizeAmount(r[iCredit]) : null;
+    if (iAmt >= 0 && debit == null && credit == null) {
+      const amt = normalizeAmount(r[iAmt]);
+      if (amt != null) { if (amt >= 0) credit = amt; else debit = Math.abs(amt); }
+    }
+    if (debit != null) debit = Math.abs(debit);
+    if (credit != null) credit = Math.abs(credit);
+    if (!txn_date || (debit == null && credit == null)) { skip++; continue; }
+    out.push({
+      txn_date,
+      description: iDesc >= 0 ? String(r[iDesc] ?? "").trim() || "(no description)" : "(no description)",
+      reference: iRef >= 0 ? String(r[iRef] ?? "").trim() || null : null,
+      debit, credit,
+      balance: iBal >= 0 ? normalizeAmount(r[iBal]) : null,
+    });
+  }
+  return { rows: out, skipped: skip };
+}
+
 export default function BankUploadCentre() {
   const { user } = useAuth();
   const { toast } = useToast();
@@ -168,12 +214,19 @@ export default function BankUploadCentre() {
     [subAccts, acctId],
   );
 
-  // PDF 多戶口 section → 該公司對應嘅戶口 (HSBC Business Direct 優先)
+  // PDF 多戶口 section / 多 worksheet sheet 名 → 該公司對應嘅戶口。
+  // sheet 名如果有戶口號碼 (e.g. "149-075533-001 HKD Current") 先用號碼收窄，
+  // 再用 Current / Savings / Foreign Currency + 幣別分辨。
   const resolveSectionAcct = (label: string, cur?: string): BankAcct | null => {
     const l = label.toLowerCase();
     const c = (cur || "").toUpperCase();
     const pool = subAccts.filter((a) => a.bank === "HSBC");
-    const cand = pool.length > 0 ? pool : subAccts;
+    let cand = pool.length > 0 ? pool : subAccts;
+    const numInLabel = label.match(/\d{3}-\d{5,}-?\d*/)?.[0];
+    if (numInLabel) {
+      const byNum = cand.filter((a) => a.account_number === numInLabel);
+      if (byNum.length > 0) cand = byNum;
+    }
     const isFcy = l.includes("foreign") || (!!c && c !== "HKD");
     if (isFcy) return cand.find((a) => a.currency !== "HKD") || null;
     if (l.includes("current")) {
@@ -198,23 +251,47 @@ export default function BankUploadCentre() {
 
   // ---- file parsing ----
   const loadGrid = (rows: any[][]) => {
-    // Header row = first row where ≥2 cells look like known statement headers
-    // (bank exports often have preamble rows above the table).
-    let headerIdx = -1;
-    for (let i = 0; i < Math.min(rows.length, 30); i++) {
-      const hits = (rows[i] || []).filter((c) => guessField(String(c ?? "")) !== "ignore").length;
-      if (hits >= 2) { headerIdx = i; break; }
-    }
-    if (headerIdx < 0) {
+    const det = detectHeader(rows);
+    if (!det) {
       setParseError("搵唔到表頭行 — 檔案入面要有 Date/日期 同 Debit/Credit/金額 等欄位名");
       setHeaders([]); setGrid([]); setMapping([]);
       return;
     }
-    const hdr = (rows[headerIdx] || []).map((c) => String(c ?? "").trim());
-    setHeaders(hdr);
-    setMapping(hdr.map(guessField));
-    setGrid(rows.slice(headerIdx + 1).filter((r) => (r || []).some((c) => c !== "" && c != null)));
+    setHeaders(det.hdr);
+    setMapping(det.mapping);
+    setGrid(det.grid);
     setParseError("");
+  };
+
+  // 多 worksheet XLSX (HSBC 匯出：每個 sheet = 一個戶口，sheet 名有戶口號碼 +
+  // 類型 e.g. "143-163103-838 HKD Savings")：全部 sheet 一次過讀晒，每行
+  // 標記所屬戶口 → 同 PDF 多戶口一樣行 autoRows 路徑 (冇欄位對應 UI)。
+  const loadMultiSheet = (sheets: { name: string; rows: any[][] }[]) => {
+    const all: ParsedRow[] = [];
+    const accounts: any[] = [];
+    const failed: string[] = [];
+    for (const s of sheets) {
+      const det = detectHeader(s.rows);
+      if (!det) { failed.push(s.name); continue; }
+      const { rows: parsed } = deriveRowsFromGrid(det.grid, det.mapping);
+      if (parsed.length === 0) { failed.push(s.name); continue; }
+      const cur = /usd|美元/i.test(s.name) ? "USD" : "HKD";
+      for (const r of parsed) all.push({ ...r, account_label: s.name, currency: cur });
+      accounts.push({ account_label: s.name, currency: cur, opening_balance: null, closing_balance: null });
+    }
+    if (all.length === 0) {
+      setParseError("每個 worksheet 都搵唔到表頭行 (要有 Date/日期 同 Amount/Debit/Credit 欄)");
+      return;
+    }
+    setHeaders([]); setGrid([]); setMapping([]);
+    setPdfRows(all);
+    setPdfMeta({ accounts });
+    setParseError("");
+    toast({
+      title: "多 worksheet 匯出檔已解析 ✓",
+      description: `${accounts.length} 個戶口 sheet，共 ${all.length} 行交易`
+        + (failed.length ? `；略過 ${failed.length} 個冇交易嘅 sheet (${failed.join(", ")})` : ""),
+    });
   };
 
   // PDF → parse-document Edge Function (bank_statement)。AI 已經自我核對
@@ -268,8 +345,17 @@ export default function BankUploadCentre() {
       reader.onload = (e) => {
         try {
           const wb = XLSX.read(new Uint8Array(e.target?.result as ArrayBuffer), { type: "array" });
-          const sheet = wb.Sheets[wb.SheetNames[0]];
-          loadGrid(XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: true }) as any[][]);
+          const sheets = wb.SheetNames
+            .map((name) => ({
+              name,
+              rows: XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: "", raw: true }) as any[][],
+            }))
+            .filter((s) => s.rows.some((r) => (r || []).some((c) => c !== "" && c != null)));
+          if (sheets.length > 1) {
+            loadMultiSheet(sheets);  // HSBC 匯出：每個 worksheet 一個戶口
+          } else {
+            loadGrid(sheets[0]?.rows || []);
+          }
         } catch (err: any) {
           setParseError(`讀取 Excel 失敗: ${err.message}`);
         }
@@ -286,35 +372,10 @@ export default function BankUploadCentre() {
     }
   };
 
-  // ---- rows derived from grid + mapping (PDF 路徑直接用 AI 解析結果) ----
+  // ---- rows derived from grid + mapping (PDF / 多 worksheet 路徑直接用 autoRows) ----
   const { rows, skipped } = useMemo(() => {
     if (pdfRows) return { rows: pdfRows, skipped: 0 };
-    const col = (k: FieldKey) => mapping.indexOf(k);
-    const iDate = col("date"), iDesc = col("description"), iRef = col("reference");
-    const iDebit = col("debit"), iCredit = col("credit"), iBal = col("balance"), iAmt = col("amount");
-    const out: ParsedRow[] = [];
-    let skip = 0;
-    if (iDate < 0) return { rows: out, skipped: 0 };
-    for (const r of grid) {
-      const txn_date = normalizeDate(r[iDate]);
-      let debit = iDebit >= 0 ? normalizeAmount(r[iDebit]) : null;
-      let credit = iCredit >= 0 ? normalizeAmount(r[iCredit]) : null;
-      if (iAmt >= 0 && debit == null && credit == null) {
-        const amt = normalizeAmount(r[iAmt]);
-        if (amt != null) { if (amt >= 0) credit = amt; else debit = Math.abs(amt); }
-      }
-      if (debit != null) debit = Math.abs(debit);
-      if (credit != null) credit = Math.abs(credit);
-      if (!txn_date || (debit == null && credit == null)) { skip++; continue; }
-      out.push({
-        txn_date,
-        description: iDesc >= 0 ? String(r[iDesc] ?? "").trim() || "(no description)" : "(no description)",
-        reference: iRef >= 0 ? String(r[iRef] ?? "").trim() || null : null,
-        debit, credit,
-        balance: iBal >= 0 ? normalizeAmount(r[iBal]) : null,
-      });
-    }
-    return { rows: out, skipped: skip };
+    return deriveRowsFromGrid(grid, mapping);
   }, [grid, mapping, pdfRows]);
 
   const totals = useMemo(() => ({
@@ -601,7 +662,8 @@ export default function BankUploadCentre() {
               : <FileSpreadsheet className="h-8 w-8 text-muted-foreground" />}
             <span className="text-sm">{file ? file.name : "撳呢度揀檔案，或者拖入嚟"}</span>
             <span className="text-xs text-muted-foreground">
-              支援 .xlsx / .xls / .csv (銀行網上理財匯出) 同 .pdf 月結單 (AI 解析，掃描版都得)
+              支援 .xlsx / .xls / .csv (銀行網上理財匯出) 同 .pdf 月結單 (AI 解析，掃描版都得)；
+              HSBC 多 worksheet 匯出檔會自動逐個戶口讀
             </span>
             {pdfBusy && <span className="text-xs text-primary">{pdfProgress || "AI 解析緊 PDF…"}</span>}
             <input type="file" className="hidden" accept=".csv,.xlsx,.xls,.pdf"
@@ -614,7 +676,8 @@ export default function BankUploadCentre() {
           {pdfRows && pdfMeta && (
             <div className="text-xs text-muted-foreground space-y-0.5">
               <div>
-                {[pdfMeta.bank, pdfMeta.account_number, pdfMeta.statement_period].filter(Boolean).join(" · ") || "PDF 月結單"}
+                {[pdfMeta.bank, pdfMeta.account_number, pdfMeta.statement_period].filter(Boolean).join(" · ")
+                  || (pdfMeta.accounts?.length ? "多戶口匯出檔" : "PDF 月結單")}
                 {pdfMeta.opening_balance != null && <> · 期初 {fmt(Number(pdfMeta.opening_balance))}</>}
                 {pdfMeta.closing_balance != null && <> · 期末 {fmt(Number(pdfMeta.closing_balance))}</>}
               </div>
