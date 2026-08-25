@@ -11,10 +11,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Landmark, Upload, Loader2, Trash2, Eye, FileSpreadsheet } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import type { UploadBatch } from "@shared/schema";
+import { parseDocument, type BankStatementRow } from "@/lib/document-parser";
+import { usePagination, PaginationFooter } from "@/components/PaginationFooter";
 
-// Bank statement Upload Centre: XLSX/CSV → bank_transactions (Bank Recon 左邊).
-// 銀行月結單匯出格式各有不同，所以 parse 完會顯示欄位對應俾用戶自己調整，
-// 確認 preview 無誤先入庫。
+// Bank statement Upload Centre: XLSX/CSV/PDF → bank_transactions (Bank Recon 左邊).
+// 銀行月結單匯出格式各有不同，所以 XLSX/CSV parse 完會顯示欄位對應俾用戶自己
+// 調整；PDF 就交俾 AI (parse-document Edge Function, bank_statement type) 解析，
+// 電子 PDF 行文字模式、掃描版自動轉圖 OCR。確認 preview 無誤先入庫。
 
 const SUBSIDIARIES: { code: string; name: string }[] = [
   { code: "PBHK", name: "Photoblog.hk Limited" },
@@ -123,13 +126,11 @@ export default function BankUploadCentre() {
   const [mapping, setMapping] = useState<FieldKey[]>([]); // per-column target field
   const [parseError, setParseError] = useState("");
 
-  // Preview pagination
-  const [page, setPage] = useState(0);
-  const [perPage, setPerPage] = useState(50);
-
-  // History pagination
-  const [histPage, setHistPage] = useState(0);
-  const [histPerPage, setHistPerPage] = useState(20);
+  // PDF (AI 解析) 路徑 — 冇欄位對應，直接出 preview rows
+  const [pdfRows, setPdfRows] = useState<ParsedRow[] | null>(null);
+  const [pdfMeta, setPdfMeta] = useState<Record<string, any> | null>(null);
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const [pdfProgress, setPdfProgress] = useState("");
 
   // ---- file parsing ----
   const loadGrid = (rows: any[][]) => {
@@ -150,12 +151,53 @@ export default function BankUploadCentre() {
     setMapping(hdr.map(guessField));
     setGrid(rows.slice(headerIdx + 1).filter((r) => (r || []).some((c) => c !== "" && c != null)));
     setParseError("");
-    setPage(0);
+  };
+
+  // PDF → parse-document Edge Function (bank_statement)。AI 已經自我核對
+  // opening + credits − debits = closing；出返嚟仍然過一次 normalize 保險。
+  const handlePdf = async (f: File) => {
+    setPdfBusy(true);
+    setPdfRows(null); setPdfMeta(null); setParseError("");
+    try {
+      const res = await parseDocument(f, "bank_statement", setPdfProgress);
+      const out: ParsedRow[] = [];
+      for (const r of (res.bank_rows || []) as BankStatementRow[]) {
+        const txn_date = normalizeDate(r.date);
+        let debit = normalizeAmount(r.debit);
+        let credit = normalizeAmount(r.credit);
+        if (debit != null) debit = Math.abs(debit);
+        if (credit != null) credit = Math.abs(credit);
+        if (!txn_date || (debit == null && credit == null)) continue;
+        out.push({
+          txn_date,
+          description: String(r.description || "").trim() || "(no description)",
+          reference: r.reference ? String(r.reference).trim() : null,
+          debit, credit,
+          balance: normalizeAmount(r.balance),
+        });
+      }
+      if (out.length === 0) throw new Error("解析唔到任何交易行 — 請檢查係咪銀行月結單 PDF");
+      setPdfRows(out);
+      setPdfMeta(res.metadata || null);
+      // 順手帶入銀行/戶口 (冇填先至填)
+      if (!bankName && res.metadata?.bank) setBankName(String(res.metadata.bank));
+      if (!bankAccount && res.metadata?.account_number) setBankAccount(String(res.metadata.account_number));
+      toast({ title: "PDF 解析完成 ✓", description: `讀到 ${out.length} 行交易，請核對 preview 先匯入` });
+    } catch (err: any) {
+      setParseError(`PDF 解析失敗: ${err.message || err}`);
+    } finally {
+      setPdfBusy(false);
+      setPdfProgress("");
+    }
   };
 
   const handleFile = (f: File) => {
     setFile(f);
-    if (/\.xlsx?$/i.test(f.name)) {
+    setPdfRows(null); setPdfMeta(null);
+    if (/\.pdf$/i.test(f.name)) {
+      setHeaders([]); setGrid([]); setMapping([]);
+      void handlePdf(f);
+    } else if (/\.xlsx?$/i.test(f.name)) {
       const reader = new FileReader();
       reader.onload = (e) => {
         try {
@@ -174,12 +216,13 @@ export default function BankUploadCentre() {
         error: (err) => setParseError(`讀取 CSV 失敗: ${err.message}`),
       });
     } else {
-      setParseError("只支援 .xlsx / .xls / .csv 銀行月結單匯出檔");
+      setParseError("只支援 .xlsx / .xls / .csv / .pdf 銀行月結單");
     }
   };
 
-  // ---- rows derived from grid + mapping ----
+  // ---- rows derived from grid + mapping (PDF 路徑直接用 AI 解析結果) ----
   const { rows, skipped } = useMemo(() => {
+    if (pdfRows) return { rows: pdfRows, skipped: 0 };
     const col = (k: FieldKey) => mapping.indexOf(k);
     const iDate = col("date"), iDesc = col("description"), iRef = col("reference");
     const iDebit = col("debit"), iCredit = col("credit"), iBal = col("balance"), iAmt = col("amount");
@@ -206,7 +249,7 @@ export default function BankUploadCentre() {
       });
     }
     return { rows: out, skipped: skip };
-  }, [grid, mapping]);
+  }, [grid, mapping, pdfRows]);
 
   const totals = useMemo(() => ({
     debit: rows.reduce((s, r) => s + (r.debit || 0), 0),
@@ -214,8 +257,21 @@ export default function BankUploadCentre() {
   }), [rows]);
 
   const resetForm = () => {
-    setFile(null); setGrid([]); setHeaders([]); setMapping([]); setParseError(""); setPage(0);
+    setFile(null); setGrid([]); setHeaders([]); setMapping([]); setParseError("");
+    setPdfRows(null); setPdfMeta(null);
   };
+
+  // PDF 解析後對數檢查：開頭結餘 + 存入 − 支出 = 期末結餘 (差異 > $0.01 就警告)
+  const pdfBalanceDiff = useMemo(() => {
+    if (!pdfRows || !pdfMeta) return null;
+    const open = Number(pdfMeta.opening_balance);
+    const close = Number(pdfMeta.closing_balance);
+    if (!isFinite(open) || !isFinite(close)) return null;
+    const dr = pdfRows.reduce((s, r) => s + (r.debit || 0), 0);
+    const cr = pdfRows.reduce((s, r) => s + (r.credit || 0), 0);
+    const diff = open + cr - dr - close;
+    return Math.abs(diff) > 0.01 ? diff : 0;
+  }, [pdfRows, pdfMeta]);
 
   // ---- import ----
   const importMutation = useMutation({
@@ -356,14 +412,11 @@ export default function BankUploadCentre() {
     onError: (e: Error) => toast({ title: "刪除失敗", description: e.message, variant: "destructive" }),
   });
 
-  const histTotalPages = Math.max(1, Math.ceil((batches?.length || 0) / histPerPage));
-  const histRows = (batches || []).slice(
-    Math.min(histPage, histTotalPages - 1) * histPerPage,
-    (Math.min(histPage, histTotalPages - 1) + 1) * histPerPage
-  );
+  const histPg = usePagination(batches || [], 20);
+  const histRows = histPg.pageItems;
 
-  const totalPages = Math.max(1, Math.ceil(rows.length / perPage));
-  const pageRows = rows.slice(Math.min(page, totalPages - 1) * perPage, (Math.min(page, totalPages - 1) + 1) * perPage);
+  const previewPg = usePagination(rows, 50);
+  const pageRows = previewPg.pageItems;
 
   return (
     <div className="p-6 space-y-6 max-w-[1200px]">
@@ -373,7 +426,7 @@ export default function BankUploadCentre() {
           Bank Upload Centre
         </h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Upload 銀行月結單 (XLSX / CSV) → Bank Recon 左邊嘅 statement lines
+          Upload 銀行月結單 (XLSX / CSV / PDF) → Bank Recon 左邊嘅 statement lines
         </p>
       </div>
 
@@ -420,14 +473,38 @@ export default function BankUploadCentre() {
             }}
             data-testid="bank-dropzone"
           >
-            <FileSpreadsheet className="h-8 w-8 text-muted-foreground" />
+            {pdfBusy
+              ? <Loader2 className="h-8 w-8 text-muted-foreground animate-spin" />
+              : <FileSpreadsheet className="h-8 w-8 text-muted-foreground" />}
             <span className="text-sm">{file ? file.name : "撳呢度揀檔案，或者拖入嚟"}</span>
-            <span className="text-xs text-muted-foreground">支援 .xlsx / .xls / .csv (銀行網上理財匯出)</span>
-            <input type="file" className="hidden" accept=".csv,.xlsx,.xls"
+            <span className="text-xs text-muted-foreground">
+              支援 .xlsx / .xls / .csv (銀行網上理財匯出) 同 .pdf 月結單 (AI 解析，掃描版都得)
+            </span>
+            {pdfBusy && <span className="text-xs text-primary">{pdfProgress || "AI 解析緊 PDF…"}</span>}
+            <input type="file" className="hidden" accept=".csv,.xlsx,.xls,.pdf"
               onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); e.target.value = ""; }} />
           </label>
 
           {parseError && <p className="text-sm text-destructive">{parseError}</p>}
+
+          {/* PDF 解析摘要 + 對數檢查 */}
+          {pdfRows && pdfMeta && (
+            <div className="text-xs text-muted-foreground space-y-0.5">
+              <div>
+                {[pdfMeta.bank, pdfMeta.account_number, pdfMeta.statement_period].filter(Boolean).join(" · ") || "PDF 月結單"}
+                {pdfMeta.opening_balance != null && <> · 期初 {fmt(Number(pdfMeta.opening_balance))}</>}
+                {pdfMeta.closing_balance != null && <> · 期末 {fmt(Number(pdfMeta.closing_balance))}</>}
+              </div>
+              {pdfBalanceDiff != null && pdfBalanceDiff !== 0 && (
+                <div className="text-amber-600 dark:text-amber-500">
+                  ⚠ 對數檢查唔平：期初 + 存入 − 支出 同期末結餘差 {fmt(Math.abs(pdfBalanceDiff))} — AI 可能讀漏/讀錯行，請逐行核對先匯入
+                </div>
+              )}
+              {pdfBalanceDiff === 0 && (
+                <div className="text-emerald-600 dark:text-emerald-400">✓ 對數檢查通過：期初 + 存入 − 支出 = 期末結餘</div>
+              )}
+            </div>
+          )}
 
           {/* Column mapping */}
           {headers.length > 0 && (
@@ -454,7 +531,7 @@ export default function BankUploadCentre() {
           )}
 
           {/* Preview */}
-          {headers.length > 0 && (
+          {(headers.length > 0 || pdfRows) && (
             <div>
               <p className="text-sm font-medium mb-2 flex items-center gap-1.5">
                 <Eye size={14} />
@@ -478,7 +555,7 @@ export default function BankUploadCentre() {
                   </thead>
                   <tbody>
                     {pageRows.map((r, i) => (
-                      <tr key={`${page}-${i}`} className="border-t border-border/50">
+                      <tr key={`${previewPg.page}-${i}`} className="border-t border-border/50">
                         <td className="px-2 py-1 tabular-nums whitespace-nowrap">{r.txn_date}</td>
                         <td className="px-2 py-1 truncate max-w-[280px]">{r.description}</td>
                         <td className="px-2 py-1 truncate max-w-[120px] text-muted-foreground">{r.reference}</td>
@@ -495,30 +572,7 @@ export default function BankUploadCentre() {
                   </tbody>
                 </table>
               </div>
-              {rows.length > 0 && (
-                <div className="flex items-center justify-between gap-2 flex-wrap py-1.5 px-1 text-xs text-muted-foreground">
-                  <div className="flex items-center gap-1.5">
-                    <Button variant="outline" size="sm" className="h-6 px-2 text-xs"
-                      disabled={page === 0} onClick={() => setPage(page - 1)}>‹</Button>
-                    <span className="tabular-nums">Page {Math.min(page, totalPages - 1) + 1} of {totalPages} ({rows.length} total items)</span>
-                    <Button variant="outline" size="sm" className="h-6 px-2 text-xs"
-                      disabled={page >= totalPages - 1} onClick={() => setPage(page + 1)}>›</Button>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <span>showing</span>
-                    <Select value={String(perPage)} onValueChange={(v) => { setPerPage(Number(v)); setPage(0); }}>
-                      <SelectTrigger className="h-6 w-20 text-xs"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="50">50</SelectItem>
-                        <SelectItem value="100">100</SelectItem>
-                        <SelectItem value="150">150</SelectItem>
-                        <SelectItem value="200">200</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <span>items per page</span>
-                  </div>
-                </div>
-              )}
+              <PaginationFooter {...previewPg.footerProps} />
               <div className="flex gap-2 mt-3">
                 <Button onClick={() => importMutation.mutate()}
                   disabled={importMutation.isPending || rows.length === 0 || !subsidiary}
@@ -583,29 +637,7 @@ export default function BankUploadCentre() {
                 </tbody>
               </table>
             </div>
-            {/* History pagination */}
-            <div className="flex items-center justify-between gap-2 flex-wrap py-1.5 px-1 text-xs text-muted-foreground">
-              <div className="flex items-center gap-1.5">
-                <Button variant="outline" size="sm" className="h-6 px-2 text-xs"
-                  disabled={histPage === 0} onClick={() => setHistPage(histPage - 1)}>‹</Button>
-                <span className="tabular-nums">Page {Math.min(histPage, histTotalPages - 1) + 1} of {histTotalPages} ({batches!.length} total items)</span>
-                <Button variant="outline" size="sm" className="h-6 px-2 text-xs"
-                  disabled={histPage >= histTotalPages - 1} onClick={() => setHistPage(histPage + 1)}>›</Button>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span>showing</span>
-                <Select value={String(histPerPage)} onValueChange={(v) => { setHistPerPage(Number(v)); setHistPage(0); }}>
-                  <SelectTrigger className="h-6 w-20 text-xs"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="20">20</SelectItem>
-                    <SelectItem value="50">50</SelectItem>
-                    <SelectItem value="100">100</SelectItem>
-                    <SelectItem value="200">200</SelectItem>
-                  </SelectContent>
-                </Select>
-                <span>items per page</span>
-              </div>
-            </div>
+            <PaginationFooter {...histPg.footerProps} />
           </CardContent>
         </Card>
       )}

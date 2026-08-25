@@ -7,7 +7,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url
 ).toString();
 
-export type DocType = "cc_statement" | "meta_invoice" | "auto";
+export type DocType = "cc_statement" | "meta_invoice" | "bank_statement" | "auto";
 
 export interface ParsedTransaction {
   date: string;
@@ -34,10 +34,21 @@ export interface ParsedInvoice {
   children?: ParsedInvoice[];
 }
 
+// 銀行月結單 (bank_statement) 每行交易 — Bank Upload Centre PDF 上載用
+export interface BankStatementRow {
+  date: string;
+  description: string;
+  reference?: string | null;
+  debit?: number | null;
+  credit?: number | null;
+  balance?: number | null;
+}
+
 export interface ParseResult {
   type: DocType;
   transactions?: ParsedTransaction[];
   invoices?: ParsedInvoice[];
+  bank_rows?: BankStatementRow[];
   metadata?: Record<string, any>;
   rawText?: string;
 }
@@ -280,7 +291,10 @@ export async function parseDocument(
 
   // Use the type returned by Edge Function (may differ from request if auto-classified)
   const detectedType: DocType = result.type || type;
-  onProgress?.(`Parsing complete! Detected: ${detectedType === "cc_statement" ? "CC Statement" : "Invoice"}`);
+  onProgress?.(`Parsing complete! Detected: ${
+    detectedType === "cc_statement" ? "CC Statement"
+    : detectedType === "bank_statement" ? "Bank Statement"
+    : "Invoice"}`);
 
   // Edge Function may return metadata at top level or nested under .metadata
   const md = result.data.metadata || result.data;
@@ -300,6 +314,22 @@ export async function parseDocument(
         bank: md.bank || result.data.bank,
         cardholder: md.cardholder,
         account_number: md.account_number,
+      },
+      rawText: text,
+    };
+  } else if (detectedType === "bank_statement") {
+    return {
+      type: detectedType,
+      bank_rows: result.data.transactions || [],
+      metadata: {
+        bank: md.bank || result.data.bank,
+        account_number: md.account_number,
+        statement_period: md.statement_period,
+        currency: md.currency,
+        opening_balance: md.opening_balance,
+        closing_balance: md.closing_balance,
+        total_debits: md.total_debits,
+        total_credits: md.total_credits,
       },
       rawText: text,
     };

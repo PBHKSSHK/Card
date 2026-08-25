@@ -14,7 +14,7 @@ const MAX_TOTAL_IMAGE_BYTES = 40 * 1024 * 1024; // 40 MB of base64
 const MAX_TEXT_CHARS = 200_000;
 
 interface ParseRequest {
-  type: 'cc_statement' | 'meta_invoice' | 'auto';
+  type: 'cc_statement' | 'meta_invoice' | 'bank_statement' | 'auto';
   text?: string;
   images?: string[];
   file_name?: string;
@@ -270,6 +270,43 @@ remittance section; null when the document shows none.)
 
 CRITICAL: Return ONLY valid JSON. No markdown, no code fences, no explanation.`;
 
+const BANK_STATEMENT_PROMPT = `You are a financial document parser for Hong Kong BANK ACCOUNT statements (HSBC, Hang Seng, BOC, Standard Chartered, DBS, Citibank, etc.) — current / savings account statements, NOT credit cards.
+
+TASK: Extract EVERY transaction line from this bank statement into structured JSON.
+
+RULES:
+1. For each transaction line extract:
+   - date: YYYY-MM-DD. Statements often print DD MMM or DD/MM — use the statement year. A statement can span two months / a year boundary (e.g. Dec → Jan): infer the correct year from the statement period.
+   - description: the full narrative / particulars text. HK statements often wrap one transaction's narrative over 2-3 lines with only one amount — merge continuation lines into ONE transaction.
+   - reference: cheque number / reference if shown, else null
+   - debit: withdrawal / money OUT as a POSITIVE number, else null
+   - credit: deposit / money IN as a POSITIVE number, else null
+   - balance: running balance after the transaction if shown, else null
+   Exactly one of debit / credit must be non-null for every transaction.
+2. DO NOT extract as transactions: opening balance (B/F, BALANCE BROUGHT FORWARD, 承上結餘), closing balance (C/F, 承下), subtotals, "TOTAL" rows, page headers/footers, interest rate notes.
+3. Amounts: strip commas and currency symbols. "1,234.56 DR" or parentheses = debit side. If the statement has a single signed Amount column: positive = credit (money in), negative = debit (money out).
+4. Scanned statements may have stamps/handwriting — read ONLY the printed numbers, and use column alignment (Debit / Credit / Balance are separate right-aligned columns) to put each amount on the correct side.
+5. SELF-CHECK (mandatory): opening_balance + total_credits - total_debits must equal closing_balance (±0.01). If it doesn't, re-read every amount and fix the discrepancy before returning.
+
+Return JSON:
+{
+  "transactions": [
+    { "date": "2026-07-02", "description": "FPS TRANSFER FROM ABC LTD", "reference": "FPS12345", "debit": null, "credit": 10000.00, "balance": 152340.50 }
+  ],
+  "metadata": {
+    "bank": "Hang Seng Bank",
+    "account_number": "as printed, else null",
+    "statement_period": "YYYY-MM-DD to YYYY-MM-DD, else null",
+    "currency": "HKD",
+    "opening_balance": <number, else null>,
+    "closing_balance": <number, else null>,
+    "total_debits": <sum of all debit amounts you extracted>,
+    "total_credits": <sum of all credit amounts you extracted>
+  }
+}
+
+CRITICAL: Return ONLY valid JSON. No markdown, no code fences, no explanation. Extract EVERY transaction line.`;
+
 const AUTO_CLASSIFY_PROMPT = `Look at this document and determine what type it is. Reply with ONLY one word:
 
 - "cc_statement" if it is a BANK CREDIT CARD MONTHLY STATEMENT (issued by a BANK like HSBC, American Express, Citibank, Hang Seng, Standard Chartered, etc.). These contain MANY transactions from different merchants over a billing period, with a statement balance, previous balance, payment due date, etc.
@@ -438,7 +475,12 @@ Deno.serve(async (req: Request) => {
     }
 
     const useVision = images && images.length > 0;
-    const systemPrompt = type === 'cc_statement' ? CC_STATEMENT_PROMPT : META_INVOICE_PROMPT;
+    const systemPrompt = type === 'cc_statement' ? CC_STATEMENT_PROMPT
+      : type === 'bank_statement' ? BANK_STATEMENT_PROMPT
+      : META_INVOICE_PROMPT;
+    const docLabel = type === 'cc_statement' ? 'credit card statement'
+      : type === 'bank_statement' ? 'bank account statement'
+      : 'invoice';
 
     const messages: any[] = [
       { role: 'system', content: systemPrompt },
@@ -446,7 +488,7 @@ Deno.serve(async (req: Request) => {
 
     if (useVision && images) {
       const content: any[] = [
-        { type: 'text', text: `Parse this ${type === 'cc_statement' ? 'credit card statement' : 'invoice'}. File: ${file_name || 'unknown'}. Extract ALL transactions — do not skip any. Pay close attention to every merchant line and amount. This may be a scanned document with handwritten marks — ignore handwriting and read ONLY the printed numbers. After extracting, do the self-check: previous_balance + transactions_sum must equal total_amount. If not, re-read every amount carefully.` },
+        { type: 'text', text: `Parse this ${docLabel}. File: ${file_name || 'unknown'}. Extract ALL transactions — do not skip any. Pay close attention to every line and amount. This may be a scanned document with handwritten marks — ignore handwriting and read ONLY the printed numbers. After extracting, do the mandatory self-check in the instructions and fix any discrepancy before returning.` },
       ];
       for (const img of images) {
         content.push({
@@ -461,7 +503,7 @@ Deno.serve(async (req: Request) => {
     } else if (text) {
       messages.push({
         role: 'user',
-        content: `Parse this ${type === 'cc_statement' ? 'credit card statement' : 'invoice'}. File: ${file_name || 'unknown'}.\n\nExtract ALL merchant/purchase transactions. Do NOT include PREVIOUS BALANCE or summary sections as transactions. Use the "Statement balance" (not spending summary) as total_amount.\n\n${text}`,
+        content: `Parse this ${docLabel}. File: ${file_name || 'unknown'}.\n\nExtract ALL transaction lines. Do NOT include opening/previous balance or summary sections as transactions.\n\n${text}`,
       });
     }
 
