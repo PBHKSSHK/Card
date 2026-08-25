@@ -34,7 +34,9 @@ export interface ParsedInvoice {
   children?: ParsedInvoice[];
 }
 
-// 銀行月結單 (bank_statement) 每行交易 — Bank Upload Centre PDF 上載用
+// 銀行月結單 (bank_statement) 每行交易 — Bank Upload Centre PDF 上載用。
+// account_label: 多戶口月結單 (HSBC Business Direct) 每行所屬 section，
+// e.g. "HKD Current" / "HKD Savings" / "Foreign Currency Savings"；單戶口 = null
 export interface BankStatementRow {
   date: string;
   description: string;
@@ -42,6 +44,8 @@ export interface BankStatementRow {
   debit?: number | null;
   credit?: number | null;
   balance?: number | null;
+  account_label?: string | null;
+  currency?: string | null;
 }
 
 export interface ParseResult {
@@ -360,6 +364,8 @@ export async function parseDocument(
         closing_balance: md.closing_balance,
         total_debits: md.total_debits,
         total_credits: md.total_credits,
+        // 多戶口月結單 — 每個 section 嘅結餘 summary (per-account 對數檢查用)
+        accounts: Array.isArray(md.accounts) ? md.accounts : null,
       },
       rawText: text,
     };

@@ -286,26 +286,38 @@ RULES:
 2. DO NOT extract as transactions: opening balance (B/F, BALANCE BROUGHT FORWARD, 承上結餘), closing balance (C/F, 承下), subtotals, "TOTAL" rows, page headers/footers, interest rate notes.
 3. Amounts: strip commas and currency symbols. "1,234.56 DR" or parentheses = debit side. If the statement has a single signed Amount column: positive = credit (money in), negative = debit (money out).
 4. Scanned statements may have stamps/handwriting — read ONLY the printed numbers, and use column alignment (Debit / Credit / Balance are separate right-aligned columns) to put each amount on the correct side.
-5. SELF-CHECK (mandatory): opening_balance + total_credits - total_debits must equal closing_balance (±0.01). If it doesn't, re-read every amount and fix the discrepancy before returning.
+
+MULTI-ACCOUNT STATEMENTS (e.g. HSBC Business Direct 商務戶口):
+One statement can contain SEVERAL account sections — the Portfolio Summary 資產摘要 lists them, then each section has its OWN transaction table with its own B/F and C/F balances. Common sections:
+- "HKD Current 港元往來" (current account)
+- "HKD Savings 港元儲蓄" (savings account)
+- "Foreign Currency Savings 外幣儲蓄" (one sub-table per currency, e.g. USD)
+For EVERY transaction set "account_label" to the section it belongs to. Use EXACTLY these values when the section matches: "HKD Current", "HKD Savings", "Foreign Currency Savings". For any other section use the heading as printed. Also set "currency" per transaction = that section's currency (check the section's CCY column — Foreign Currency sections are often USD).
+For a single-account statement: account_label = null on every transaction, and metadata.accounts has one entry with account_label = null.
+
+5. SELF-CHECK (mandatory, PER ACCOUNT SECTION): for each section, opening_balance + total_credits - total_debits must equal closing_balance (±0.01). If it doesn't, re-read every amount in that section and fix the discrepancy before returning.
 
 Return JSON:
 {
   "transactions": [
-    { "date": "2026-07-02", "description": "FPS TRANSFER FROM ABC LTD", "reference": "FPS12345", "debit": null, "credit": 10000.00, "balance": 152340.50 }
+    { "date": "2026-07-02", "description": "FPS TRANSFER FROM ABC LTD", "reference": "FPS12345", "debit": null, "credit": 10000.00, "balance": 152340.50, "account_label": "HKD Savings", "currency": "HKD" }
   ],
   "metadata": {
-    "bank": "Hang Seng Bank",
+    "bank": "HSBC",
     "account_number": "as printed, else null",
     "statement_period": "YYYY-MM-DD to YYYY-MM-DD, else null",
     "currency": "HKD",
-    "opening_balance": <number, else null>,
-    "closing_balance": <number, else null>,
-    "total_debits": <sum of all debit amounts you extracted>,
-    "total_credits": <sum of all credit amounts you extracted>
+    "opening_balance": <single-account statements only; null for multi-account>,
+    "closing_balance": <single-account statements only; null for multi-account>,
+    "total_debits": <sum across all sections>,
+    "total_credits": <sum across all sections>,
+    "accounts": [
+      { "account_label": "HKD Current", "account_number": "143-163103-838", "currency": "HKD", "opening_balance": <number|null>, "closing_balance": <number|null>, "total_debits": <number>, "total_credits": <number> }
+    ]
   }
 }
 
-CRITICAL: Return ONLY valid JSON. No markdown, no code fences, no explanation. Extract EVERY transaction line.`;
+CRITICAL: Return ONLY valid JSON. No markdown, no code fences, no explanation. Extract EVERY transaction line from EVERY account section.`;
 
 const AUTO_CLASSIFY_PROMPT = `Look at this document and determine what type it is. Reply with ONLY one word:
 

@@ -104,6 +104,17 @@ type ParsedRow = {
   debit: number | null;
   credit: number | null;
   balance: number | null;
+  // PDF 多戶口月結單 (HSBC Business Direct) 先有：行所屬戶口 section + 幣別
+  account_label?: string | null;
+  currency?: string;
+};
+
+// HSBC Business Direct 月結單一份 PDF 有齊三個戶口 section —
+// 每行交易按 section 對應返獨立戶口名，入落 bank_transactions.bank_account
+const ACCOUNT_LABEL_MAP: Record<string, string> = {
+  "HKD Current": "HSBC Business Direct HKD Current 港元往來",
+  "HKD Savings": "HSBC Business Direct HKD Savings 港元儲蓄",
+  "Foreign Currency Savings": "HSBC Business Direct Foreign Currency Savings 外幣儲蓄",
 };
 
 function fmt(n: number | null | undefined): string {
@@ -174,6 +185,8 @@ export default function BankUploadCentre() {
           reference: r.reference ? String(r.reference).trim() : null,
           debit, credit,
           balance: normalizeAmount(r.balance),
+          account_label: r.account_label ? String(r.account_label) : null,
+          currency: r.currency ? String(r.currency).toUpperCase() : undefined,
         });
       }
       if (out.length === 0) throw new Error("解析唔到任何交易行 — 請檢查係咪銀行月結單 PDF");
@@ -261,9 +274,10 @@ export default function BankUploadCentre() {
     setPdfRows(null); setPdfMeta(null);
   };
 
-  // PDF 解析後對數檢查：開頭結餘 + 存入 − 支出 = 期末結餘 (差異 > $0.01 就警告)
+  // PDF 解析後對數檢查：期初 + 存入 − 支出 = 期末 (差異 > $0.01 就警告)。
+  // 多戶口月結單 (metadata.accounts) 逐個 section 檢查；單戶口用整體結餘。
   const pdfBalanceDiff = useMemo(() => {
-    if (!pdfRows || !pdfMeta) return null;
+    if (!pdfRows || !pdfMeta || (pdfMeta.accounts?.length ?? 0) > 0) return null;
     const open = Number(pdfMeta.opening_balance);
     const close = Number(pdfMeta.closing_balance);
     if (!isFinite(open) || !isFinite(close)) return null;
@@ -272,6 +286,27 @@ export default function BankUploadCentre() {
     const diff = open + cr - dr - close;
     return Math.abs(diff) > 0.01 ? diff : 0;
   }, [pdfRows, pdfMeta]);
+
+  const pdfAccountChecks = useMemo(() => {
+    if (!pdfRows || !pdfMeta?.accounts?.length) return null;
+    return (pdfMeta.accounts as any[]).map((a) => {
+      const label = a.account_label ? String(a.account_label) : null;
+      const secRows = pdfRows.filter((r) => (r.account_label || null) === label);
+      const dr = secRows.reduce((s, r) => s + (r.debit || 0), 0);
+      const cr = secRows.reduce((s, r) => s + (r.credit || 0), 0);
+      const open = Number(a.opening_balance);
+      const close = Number(a.closing_balance);
+      const diff = isFinite(open) && isFinite(close) ? open + cr - dr - close : null;
+      return {
+        label: label || "戶口",
+        currency: a.currency ? String(a.currency).toUpperCase() : "",
+        count: secRows.length,
+        diff: diff == null ? null : (Math.abs(diff) > 0.01 ? diff : 0),
+      };
+    });
+  }, [pdfRows, pdfMeta]);
+
+  const hasMultiAccounts = !!pdfRows?.some((r) => r.account_label);
 
   // ---- import ----
   const importMutation = useMutation({
@@ -320,18 +355,22 @@ export default function BankUploadCentre() {
       }).select("id").single();
       if (bErr) throw bErr;
 
+      // 多戶口月結單 (HSBC Business Direct)：每行按 section 對應獨立戶口名；
+      // 單戶口照用表頭輸入嘅戶口號碼
       const records = rows.map((r) => ({
         batch_id: batch.id,
         subsidiary,
         bank_name: bankName || null,
-        bank_account: bankAccount || null,
+        bank_account: r.account_label
+          ? (ACCOUNT_LABEL_MAP[r.account_label] || `${bankAccount ? bankAccount + " " : ""}${r.account_label}`)
+          : (bankAccount || null),
         txn_date: r.txn_date,
         description: r.description,
         reference: r.reference,
         debit: r.debit,
         credit: r.credit,
         balance: r.balance,
-        currency: "HKD",
+        currency: r.currency || "HKD",
         period_month: r.txn_date.slice(0, 7),
         user_id: user?.id ?? null,
       }));
@@ -503,6 +542,19 @@ export default function BankUploadCentre() {
               {pdfBalanceDiff === 0 && (
                 <div className="text-emerald-600 dark:text-emerald-400">✓ 對數檢查通過：期初 + 存入 − 支出 = 期末結餘</div>
               )}
+              {/* 多戶口月結單 (HSBC Business Direct) — 逐個戶口 section 檢查 */}
+              {pdfAccountChecks?.map((c, i) => (
+                <div key={i} className={
+                  c.diff === 0 ? "text-emerald-600 dark:text-emerald-400"
+                  : c.diff != null ? "text-amber-600 dark:text-amber-500"
+                  : ""
+                }>
+                  {c.diff === 0 ? "✓" : c.diff != null ? "⚠" : "·"}{" "}
+                  {ACCOUNT_LABEL_MAP[c.label] || c.label}{c.currency ? ` (${c.currency})` : ""} — {c.count} 行
+                  {c.diff != null && c.diff !== 0 && <>，對數差 {fmt(Math.abs(c.diff))} — 請核對呢個戶口嘅行</>}
+                  {c.diff === 0 && <>，對數平</>}
+                </div>
+              ))}
             </div>
           )}
 
@@ -546,6 +598,7 @@ export default function BankUploadCentre() {
                   <thead className="bg-muted/50 sticky top-0">
                     <tr>
                       <th className="text-left px-2 py-1.5 font-medium">日期</th>
+                      {hasMultiAccounts && <th className="text-left px-2 py-1.5 font-medium">戶口</th>}
                       <th className="text-left px-2 py-1.5 font-medium">描述</th>
                       <th className="text-left px-2 py-1.5 font-medium">Ref</th>
                       <th className="text-right px-2 py-1.5 font-medium">支出</th>
@@ -557,6 +610,11 @@ export default function BankUploadCentre() {
                     {pageRows.map((r, i) => (
                       <tr key={`${previewPg.page}-${i}`} className="border-t border-border/50">
                         <td className="px-2 py-1 tabular-nums whitespace-nowrap">{r.txn_date}</td>
+                        {hasMultiAccounts && (
+                          <td className="px-2 py-1 whitespace-nowrap text-muted-foreground">
+                            {r.account_label || "—"}{r.currency && r.currency !== "HKD" ? ` (${r.currency})` : ""}
+                          </td>
+                        )}
                         <td className="px-2 py-1 truncate max-w-[280px]">{r.description}</td>
                         <td className="px-2 py-1 truncate max-w-[120px] text-muted-foreground">{r.reference}</td>
                         <td className="px-2 py-1 text-right tabular-nums text-red-600 dark:text-red-400">{fmt(r.debit)}</td>
@@ -565,7 +623,7 @@ export default function BankUploadCentre() {
                       </tr>
                     ))}
                     {rows.length === 0 && (
-                      <tr><td colSpan={6} className="text-center text-muted-foreground py-4">
+                      <tr><td colSpan={hasMultiAccounts ? 7 : 6} className="text-center text-muted-foreground py-4">
                         未有可入庫嘅行 — 檢查上面欄位對應 (日期 + 支出/存入/金額 必須有)
                       </td></tr>
                     )}
