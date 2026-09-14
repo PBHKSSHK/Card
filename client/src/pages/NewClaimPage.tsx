@@ -353,11 +353,14 @@ export default function NewClaimPage() {
         if (!batch) throw new Error("Claim not found");
         if (cancelled) return;
 
-        // Only draft / rejected is editable
-        if (batch.status !== "draft" && batch.status !== "rejected") {
+        // Only draft / rejected is editable — 已簽批付款 (未入 NetSuite) 提交後
+        // (submitted / approved) 都可以 reopen 修改，再提交會再自動批核
+        const preReopenable = batch.claim_type === "payment" && !!batch.is_pre_approved
+          && (batch.status === "submitted" || batch.status === "approved") && !batch.exported_at;
+        if (batch.status !== "draft" && batch.status !== "rejected" && !preReopenable) {
           toast({
             title: "無法修改",
-            description: `Claim 狀態為「${batch.status}」，只有 draft / rejected 可以修改`,
+            description: `狀態為「${batch.status}」— 只有草稿 / 退回可以修改（已簽批付款：入 NetSuite 前都可以）`,
             variant: "destructive",
           });
           setLocation(batch.claim_type === "payment" ? (batch.is_pre_approved ? `/payments/preapproved/${editId}` : `/payments/${editId}`) : `/claims/${editId}`);
@@ -919,6 +922,10 @@ export default function NewClaimPage() {
     }));
   }
 
+  // 已簽批付款提交後 reopen 修改：submitted / approved → draft → 再提交會再自動批核
+  const isPreReopen = isEdit && claimType === "payment" && isPreApproved
+    && (originalStatus === "submitted" || originalStatus === "approved");
+
   async function save(asSubmit: boolean) {
     if (!session?.user?.id) {
       toast({ title: "未登入", description: "請重新登入", variant: "destructive" });
@@ -1193,9 +1200,12 @@ export default function NewClaimPage() {
             // re-insert claim_lines below; the flip to "submitted" happens as the
             // LAST step (RLS only allows line writes while draft/rejected).
             status: "draft",
+            // 已簽批付款 reopen (submitted/approved → draft)：清走舊批核紀錄，再提交會再蓋
+            ...(isPreReopen ? { approver_user_id: null, approved_at: null, approver_comment: null } : {}),
           })
           .eq("id", editId)
-          .in("status", ["draft", "rejected"])  // safety: 只准 draft / rejected 改
+          // safety: 只准 draft / rejected 改；已簽批付款未入 NetSuite 前 submitted / approved 都可以 reopen
+          .in("status", isPreReopen ? ["draft", "rejected", "submitted", "approved"] : ["draft", "rejected"])
           .select()
           .single();
         if (updErr) throw updErr;
@@ -1214,6 +1224,17 @@ export default function NewClaimPage() {
         // 這裡我們選擇：保留舊 line attachments rows，包含 line_id 指向刪除中 lines。
         // 該 line_id FK 為 ON DELETE SET NULL（見 migration_attachment_line_id）→ 會 推到 batch 級。
         await supabase.from("claim_lines").delete().eq("batch_id", editId);
+
+        if (isPreReopen) {
+          await supabase.from("claim_audit_log").insert({
+            batch_id: editId,
+            action: "reopened",
+            from_status: originalStatus,
+            to_status: "draft",
+            actor_user_id: session.user.id,
+            comment: "已簽批付款 — 提交後修改（未入 NetSuite）",
+          });
+        }
       } else {
         // === INSERT flow (new claim) ===
         const { data: insertedBatch, error: batchErr } = await supabase
@@ -1439,7 +1460,9 @@ export default function NewClaimPage() {
           : asSubmit
           ? (originalStatus === "rejected" ? "已重新提交" : "已提交")
           : (isEdit
-              ? (originalStatus === "rejected" ? "已轉回草稿" : "已更新草稿")
+              ? (originalStatus === "rejected" ? "已轉回草稿"
+                : isPreReopen ? "已退返草稿 — 要再提交先會批核 / 出現喺 Export"
+                : "已更新草稿")
               : "已儲存草稿"),
         description: `${batch.batch_no || ""} · 總金額 HK$${totalHkd.toFixed(2)}`,
       });
@@ -1471,7 +1494,9 @@ export default function NewClaimPage() {
   // 付款申請返回目標：已簽批 → 自己嘅面板
   const paymentListPath = isPreApproved ? "/payments/preapproved" : "/payments";
   const pageTitle = isEdit
-    ? (originalStatus === "rejected" ? `修改退回申請 · ${typeLabel}` : `修改草稿 · ${typeLabel}`)
+    ? (originalStatus === "rejected" ? `修改退回申請 · ${typeLabel}`
+      : isPreReopen ? `修改已提交申請 · ${typeLabel}`
+      : `修改草稿 · ${typeLabel}`)
     : `新建 ${typeLabel}`;
 
   if (loadingEdit) {
@@ -1504,6 +1529,15 @@ export default function NewClaimPage() {
             請上載已簽名嘅發票／申請表做附件，跟平時付款申請一樣填資料。撳「提交」後唔經審批，直接變已批核，
             Owner/Admin 可即時喺「付款申請 Export」入 NetSuite (Vendor Bills)。
           </div>
+          <div className="text-xs text-emerald-700/80 dark:text-emerald-400/80 mt-1">
+            提交後、入 NetSuite 前仍然可以修改；修改後再提交會再自動批核。
+          </div>
+          {isPreReopen && (
+            <div className="text-xs mt-2 rounded border border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-300 p-2">
+              呢張單已經提交／自動批核（{originalStatus === "approved" ? "已批核" : "已提交"}）。改完請撳「重新提交」會再自動批核；
+              如果只係「退返草稿」，張單會變返草稿，Export 頁暫時唔會見到，要再提交先可以入 NetSuite。
+            </div>
+          )}
         </div>
       )}
 
@@ -2157,10 +2191,10 @@ export default function NewClaimPage() {
       {/* Actions */}
       <div className="flex items-center justify-end gap-2 sticky bottom-0 bg-background/80 backdrop-blur py-3">
         <Button variant="outline" onClick={() => save(false)} disabled={saving} data-testid="button-save-draft">
-          <Save size={14} className="mr-1" /> {isEdit ? "更新草稿" : "儲存草稿"}
+          <Save size={14} className="mr-1" /> {isPreReopen ? "退返草稿" : isEdit ? "更新草稿" : "儲存草稿"}
         </Button>
         <Button onClick={() => save(true)} disabled={saving} data-testid="button-submit">
-          <Send size={14} className="mr-1" /> {claimType === "payment" && isPreApproved ? "提交 (免審批・直接批核)" : "提交申請"}
+          <Send size={14} className="mr-1" /> {claimType === "payment" && isPreApproved ? (isPreReopen ? "重新提交 (直接批核)" : "提交 (免審批・直接批核)") : "提交申請"}
         </Button>
       </div>
 

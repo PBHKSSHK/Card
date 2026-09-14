@@ -165,6 +165,9 @@ export default function ClaimDetailPage() {
 
   const claimType = batch?.claim_type || "expenses";
   const status = batch?.status || "draft";
+  // 已簽批付款：提交後 (submitted / approved)、未入 NetSuite 前仍可修改
+  const preReopenable = claimType === "payment" && !!batch?.is_pre_approved
+    && (status === "submitted" || status === "approved") && !batch?.exported_at;
 
   // Permission checks
   const isClaimant = session?.user?.id === batch?.claimant_user_id;
@@ -691,7 +694,7 @@ export default function ClaimDetailPage() {
                 )}
                 {batch.is_pre_approved && (
                   <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 font-medium"
-                    title="老闆已喺紙上簽名批准，提交後直接批核">已簽批</span>
+                    title="老闆已喺紙上簽名批准，提交後直接批核；入 NetSuite 前仍可修改">已簽批</span>
                 )}
               </div>
               <div className="text-xs text-muted-foreground">
@@ -1005,15 +1008,15 @@ export default function ClaimDetailPage() {
           />
         )}
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Edit draft / rejected — 草稿或退回狀態可以修改（admin/owner 可以代修同事） */}
-          {(status === "draft" || status === "rejected") && (isClaimant || isSuperUser) && (
+          {/* Edit draft / rejected — 草稿或退回狀態可以修改（admin/owner 可以代修同事）；已簽批付款入 NetSuite 前都可以 */}
+          {(status === "draft" || status === "rejected" || preReopenable) && (isClaimant || isSuperUser) && (
             <Button
               variant="outline"
               onClick={() => setLocation(claimType === "payment" ? (batch?.is_pre_approved ? `/payments/preapproved/${claimId}/edit` : `/payments/${claimId}/edit`) : `/claims/${claimId}/edit`)}
               disabled={processing}
               data-testid="button-edit-draft"
             >
-              <FileText size={14} className="mr-1" /> {status === "rejected" ? "修改後重新提交" : "繼續修改草稿"}
+              <FileText size={14} className="mr-1" /> {status === "rejected" ? "修改後重新提交" : preReopenable ? "修改 (未入 NetSuite 可改)" : "繼續修改草稿"}
             </Button>
           )}
           {/* Claimant resubmit */}

@@ -20,7 +20,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { usePagination, PaginationFooter } from "@/components/PaginationFooter";
 import {
   ShieldCheck, Filter, CheckCircle2, Clock, XCircle, FileCheck, Send, Eye,
-  Building2, UserRound, FileDown,
+  Building2, UserRound, FileDown, Pencil,
 } from "lucide-react";
 
 const STATUS_LABELS: Record<string, { label: string; color: string; icon: any }> = {
@@ -124,7 +124,8 @@ export default function PaymentsPreApprovedPage() {
             已簽批付款 Pre-approved Payments
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            老闆已喺紙上簽名批准嘅供應商 / 自由工作者付款 — 上載已簽名發票、跟付款申請版面入資料，提交後免審批直接批核，可即時入 NetSuite
+            老闆已喺紙上簽名批准嘅供應商 / 自由工作者付款 — 上載已簽名發票、跟付款申請版面入資料，提交後免審批直接批核，可即時入 NetSuite。
+            提交後、入 NetSuite 前仍可修改（再提交會再自動批核）。
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -282,7 +283,15 @@ export default function PaymentsPreApprovedPage() {
                           <div className="text-[10px] text-muted-foreground font-mono mt-0.5">{c.netsuite_journal_no}</div>
                         )}
                       </td>
-                      <td className="px-4 py-3 text-right">
+                      <td className="px-4 py-3 text-right whitespace-nowrap">
+                        {["draft", "rejected", "submitted", "approved"].includes(c.status) && (
+                          <Link href={`/payments/preapproved/${c.id}/edit`}>
+                            <Button size="sm" variant="ghost" title="提交後、入 NetSuite 前仍可修改" data-testid={`button-edit-${c.batch_no}`}>
+                              <Pencil size={14} className="mr-1" />
+                              修改
+                            </Button>
+                          </Link>
+                        )}
                         <Link href={`/payments/preapproved/${c.id}`}>
                           <Button size="sm" variant="ghost" data-testid={`button-view-${c.batch_no}`}>
                             <Eye size={14} className="mr-1" />
