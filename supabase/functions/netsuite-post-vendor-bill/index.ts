@@ -10,7 +10,12 @@
 //               dueDate: payment_due_date,
 //               expense lines: account ← expense_categories→COA internal id,
 //               department ← line_charge_to 或表頭 charge_to, customer ← project (job) }
-// 預付款 (is_prepayment) 唔會自動開 bill — NetSuite 用 Vendor Prepayment 手動入。
+// 預付款 (is_prepayment)：bill 日期 = 發票日期，一次過 CR AP 全額；明細行按日期分三路 —
+//   行日期 = 發票日期 → DR 費用科目 (一般入法)
+//   行日期 < 發票日期 → bill 行 DR 37001010 Accrued Expenses，另出 JE (行日期) DR 費用 / CR 37001010
+//   行日期 > 發票日期 → bill 行 DR 22005010 Prepaid Expenses，另出 JE (行日期) DR 費用 / CR 22005010
+//   同日期嘅行合成一張 JE (unapproved draft)，externalId PAYJE-<batch_no>-<YYYYMMDD>，幂等。
+// 一般付款：明細日期 = 發票日期 (表格已驗證)，發票日期做 bill date。
 // Success → claim_batches.status='exported' + netsuite_journal_no='BILL <id>'.
 // Duplicate externalId → status 'duplicate' (幂等，可以放心重按)。
 //
@@ -185,6 +190,26 @@ Deno.serve(async (req) => {
     }
 
     // ---- build + post per batch ----
+    const ACCRUED_ACCT = '37001010';   // Accrued Expenses - General
+    const PREPAID_ACCT = '22005010';   // Prepaid Expenses
+    const today = new Date().toISOString().slice(0, 10);
+    const postRecord = async (type: 'vendorBill' | 'journalEntry', payload: any): Promise<{ ok: boolean; id?: string; duplicate?: boolean; error?: string }> => {
+      const url = `https://${host}.suitetalk.api.netsuite.com/services/rest/record/v1/${type}`;
+      const header = await authHeader('POST', url, cfg as Record<string, string>);
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { Authorization: header, 'Content-Type': 'application/json', Prefer: 'transient' },
+        body: JSON.stringify(payload),
+      });
+      if (res.status === 204 || res.status === 201 || res.ok) {
+        const loc = res.headers.get('Location') || '';
+        return { ok: true, id: loc.split('/').pop() || 'created' };
+      }
+      const errText = (await res.text()).slice(0, 800);
+      if (/already exists|duplicate/i.test(errText)) return { ok: false, duplicate: true, error: errText };
+      return { ok: false, error: `NetSuite ${res.status}: ${errText}` };
+    };
+
     const results: any[] = [];
     let created = 0, duplicates = 0, failed = 0;
     for (const batch of batches || []) {
@@ -192,12 +217,6 @@ Deno.serve(async (req) => {
       const problems: string[] = [];
       const lines = linesByBatch.get(batch.id) || [];
 
-      // 預付款/按金 — 唔係一般費用，唔會自動開 bill；NetSuite 用 Vendor
-      // Prepayment / 預付科目手動入數，之後對沖。
-      if (batch.is_prepayment) {
-        results.push({ batch_id: batch.id, batch_no: batch.batch_no, label, status: 'prepayment', error: '預付款 — 請喺 NetSuite 用 Vendor Prepayment 入數，App 度撳「標記已入數」' });
-        continue;
-      }
       if (!['approved', 'exported'].includes(batch.status)) problems.push(`status 係 ${batch.status}，要 approved 先可以入數`);
       if (lines.length === 0) problems.push('冇 approved 明細行');
       if (!batch.batch_no) problems.push('冇 batch no');
@@ -208,7 +227,18 @@ Deno.serve(async (req) => {
       const sid = subId.get(String(batch.entity_code || '')) ?? subId.get(String(batch.subsidiary_full_name || ''));
       if (sid == null) problems.push(`subsidiary not mapped: ${batch.entity_code || batch.subsidiary_full_name || '?'}`);
 
+      // 發票日期 = bill date；冇先用批核日/提交日
+      const billDate = String(batch.invoice_date || toHKDate(batch.approved_at) || batch.submit_date || today).slice(0, 10);
+      const accruedId = acctId.get(ACCRUED_ACCT);
+      const prepaidId = acctId.get(PREPAID_ACCT);
+      if (batch.is_prepayment && (accruedId == null || prepaidId == null)) {
+        problems.push(`預付款科目 ${ACCRUED_ACCT} / ${PREPAID_ACCT} 冇 internal id — 請先同步 Chart of Accounts`);
+      }
+      const batchDeptId = batch.charge_to_code ? deptByChargeTo.get(String(batch.charge_to_code)) : undefined;
+
       const items: any[] = [];
+      // 預付款：行日期 ≠ 發票日期嘅行另出 JE，同日期合成一張
+      const jeGroups = new Map<string, { date: string; kind: 'accrual' | 'prepaid'; items: any[]; total: number }>();
       let total = 0;
       for (const l of lines) {
         const amt = Math.round(Number(l.hkd_amount || 0) * 100) / 100;
@@ -218,24 +248,43 @@ Deno.serve(async (req) => {
         if (!acctNum) { problems.push(`行 #${l.item_no} 冇 expense category`); continue; }
         const aid = acctId.get(acctNum);
         if (aid == null) { problems.push(`account ${acctNum} 冇 internal id (行 #${l.item_no})`); continue; }
-        const item: any = {
-          account: { id: String(aid) },
-          amount: amt,
-          memo: [l.description, l.client_name ? `(${l.client_name})` : ''].filter(Boolean).join(' ').slice(0, 4000) || undefined,
-        };
+        const memo = [l.description, l.client_name ? `(${l.client_name})` : ''].filter(Boolean).join(' ').slice(0, 4000) || undefined;
         // 一張發票拆多個 department：行有自己嘅 charge to 就用行嘅，否則跟表頭
         const chargeTo = (l.line_charge_to || batch.charge_to_code || '').trim();
         const did = chargeTo ? deptByChargeTo.get(chargeTo) : undefined;
-        if (did != null) item.department = { id: String(did) };
-        else if (l.line_charge_to) problems.push(`行 #${l.item_no} 嘅 charge to ${l.line_charge_to} 冇 department internal id`);
+        if (did == null && l.line_charge_to) problems.push(`行 #${l.item_no} 嘅 charge to ${l.line_charge_to} 冇 department internal id`);
         const cp = (l.project_code || '').trim();
+        let jid: string | undefined;
         if (cp) {
-          const jid = jobId.get(cp);
-          if (jid) item.customer = { id: jid };  // bill expense line books project 經 customer(job) field
-          else problems.push(`project (job) not found: ${cp}`);
+          jid = jobId.get(cp);
+          if (!jid) problems.push(`project (job) not found: ${cp}`);
         }
+
+        const lineDate = String(l.line_date || billDate).slice(0, 10);
+        const kind: 'expense' | 'accrual' | 'prepaid' =
+          !batch.is_prepayment || lineDate === billDate ? 'expense'
+          : lineDate < billDate ? 'accrual' : 'prepaid';
+
+        const billItem: any = {
+          account: { id: String(kind === 'expense' ? aid : kind === 'accrual' ? accruedId : prepaidId) },
+          amount: amt,
+          memo: kind === 'expense' ? memo
+            : `${kind === 'accrual' ? 'Accrued' : 'Prepaid'} ${lineDate} - ${memo || ''}`.trim().slice(0, 4000),
+        };
+        if (did != null) billItem.department = { id: String(did) };
+        if (kind === 'expense' && jid) billItem.customer = { id: jid };  // bill expense line books project 經 customer(job) field
         total += amt;
-        items.push(item);
+        items.push(billItem);
+
+        if (kind !== 'expense') {
+          let g = jeGroups.get(lineDate);
+          if (!g) { g = { date: lineDate, kind, items: [], total: 0 }; jeGroups.set(lineDate, g); }
+          const dr: any = { account: { id: String(aid) }, debit: amt, memo };
+          if (did != null) dr.department = { id: String(did) };
+          if (jid) dr.entity = { id: jid };  // JE 行 project 經 entity (job)
+          g.items.push(dr);
+          g.total += amt;
+        }
       }
       if (items.length === 0 && problems.length === 0) problems.push('冇有效明細行');
 
@@ -250,57 +299,100 @@ Deno.serve(async (req) => {
         entity: { id: vendor!.id },
         subsidiary: { id: String(sid) },
         currency: { id: '1' },
-        // 發票日期優先做 bill date；冇先用批核日/提交日
-        tranDate: batch.invoice_date || toHKDate(batch.approved_at) || batch.submit_date || new Date().toISOString().slice(0, 10),
+        tranDate: billDate,
         memo: `CardRecon payment requisition ${batch.batch_no} - req by ${batch.full_name || '?'}`.slice(0, 4000),
         expense: { items },
       };
       if (batch.supplier_invoice_no) payload.tranId = String(batch.supplier_invoice_no).slice(0, 45);
       if (batch.payment_due_date) payload.dueDate = batch.payment_due_date;
 
+      const journals = [...jeGroups.values()].sort((a, b) => a.date.localeCompare(b.date)).map((g) => {
+        const crAcct = g.kind === 'accrual' ? accruedId : prepaidId;
+        const cr: any = {
+          account: { id: String(crAcct) },
+          credit: Math.round(g.total * 100) / 100,
+          memo: `${g.kind === 'accrual' ? 'Accrued expenses' : 'Prepaid amortisation'} ${batch.batch_no} - ${batch.payee_name || ''}`.slice(0, 4000),
+        };
+        if (batchDeptId != null) cr.department = { id: String(batchDeptId) };
+        return {
+          date: g.date, kind: g.kind, total: Math.round(g.total * 100) / 100,
+          payload: {
+            externalId: `PAYJE-${String(batch.batch_no).replace(/[^A-Za-z0-9-]+/g, '')}-${g.date.replace(/-/g, '')}`,
+            subsidiary: { id: String(sid) },
+            currency: { id: '1' },
+            tranDate: g.date,
+            memo: `CardRecon ${batch.batch_no} ${g.kind === 'accrual' ? 'accrual' : 'prepaid amortisation'} - ${batch.payee_name || ''}`.slice(0, 4000),
+            approved: false,
+            line: { items: [...g.items, cr] },
+          },
+        };
+      });
+
       if (dryRun) {
-        results.push({ batch_id: batch.id, batch_no: batch.batch_no, label, vendor: vendor!.label, status: 'dry_run', lines: items.length, total: Math.round(total * 100) / 100 });
+        results.push({
+          batch_id: batch.id, batch_no: batch.batch_no, label, vendor: vendor!.label, status: 'dry_run',
+          bill_date: billDate, lines: items.length, total: Math.round(total * 100) / 100,
+          journals: journals.map((j) => ({ date: j.date, kind: j.kind, total: j.total, lines: j.payload.line.items.length })),
+        });
         continue;
       }
 
-      const url = `https://${host}.suitetalk.api.netsuite.com/services/rest/record/v1/vendorBill`;
-      const header = await authHeader('POST', url, cfg as Record<string, string>);
-      const nsRes = await fetch(url, {
-        method: 'POST',
-        headers: { Authorization: header, 'Content-Type': 'application/json', Prefer: 'transient' },
-        body: JSON.stringify(payload),
-      });
-      if (nsRes.status === 204 || nsRes.status === 201 || nsRes.ok) {
-        const loc = nsRes.headers.get('Location') || '';
-        const nsInternalId = loc.split('/').pop() || 'created';
+      const bill = await postRecord('vendorBill', payload);
+      if (!bill.ok && !bill.duplicate) {
+        failed++;
+        results.push({ batch_id: batch.id, batch_no: batch.batch_no, label, status: 'error', error: bill.error });
+        continue;
+      }
+      const billStatus: 'created' | 'duplicate' = bill.ok ? 'created' : 'duplicate';
+
+      // 預付款 JE — bill 新建或已存在都照 post (externalId 幂等，重按只會補漏)
+      const jeResults: any[] = [];
+      let jeFailed = 0;
+      for (const j of journals) {
+        const r = await postRecord('journalEntry', j.payload);
+        if (r.ok) jeResults.push({ date: j.date, kind: j.kind, total: j.total, status: 'created', netsuite_id: r.id });
+        else if (r.duplicate) jeResults.push({ date: j.date, kind: j.kind, total: j.total, status: 'duplicate' });
+        else { jeFailed++; jeResults.push({ date: j.date, kind: j.kind, total: j.total, status: 'error', error: r.error }); }
+      }
+      const jeIds = jeResults.filter((r) => r.netsuite_id).map((r) => r.netsuite_id);
+      const jeNote = (jeIds.length ? `; JE ${jeIds.join(', ')}` : '') + (jeFailed ? `; ${jeFailed} JE 失敗` : '');
+
+      if (billStatus === 'created') {
         created++;
-        // approved → exported + 記低 bill id；audit log 一條
         await svc.from('claim_batches').update({
           status: 'exported',
-          netsuite_journal_no: `BILL ${nsInternalId}`,
+          netsuite_journal_no: `BILL ${bill.id}`,
           exported_at: new Date().toISOString(),
           exported_by_user_id: claims.sub || null,
         }).eq('id', batch.id).in('status', ['approved', 'exported']);
         await svc.from('claim_audit_log').insert({
           batch_id: batch.id, action: 'exported', from_status: batch.status, to_status: 'exported',
-          actor_user_id: claims.sub || null, comment: `NetSuite vendor bill ${nsInternalId} (${vendor!.label})`,
+          actor_user_id: claims.sub || null, comment: `NetSuite vendor bill ${bill.id} (${vendor!.label})${jeNote}`,
         });
-        results.push({ batch_id: batch.id, batch_no: batch.batch_no, label, vendor: vendor!.label, status: 'created', netsuite_id: nsInternalId, lines: items.length, total: Math.round(total * 100) / 100 });
       } else {
-        const errText = (await nsRes.text()).slice(0, 800);
-        if (/already exists|duplicate/i.test(errText)) {
-          duplicates++;
-          await svc.from('claim_batches').update({
-            status: 'exported',
-            exported_at: new Date().toISOString(),
-            exported_by_user_id: claims.sub || null,
-          }).eq('id', batch.id).eq('status', 'approved');
-          results.push({ batch_id: batch.id, batch_no: batch.batch_no, label, status: 'duplicate', error: 'externalId already posted (bill 已存在 NetSuite)' });
-        } else {
-          failed++;
-          results.push({ batch_id: batch.id, batch_no: batch.batch_no, label, status: 'error', error: `NetSuite ${nsRes.status}: ${errText}` });
+        duplicates++;
+        await svc.from('claim_batches').update({
+          status: 'exported',
+          exported_at: new Date().toISOString(),
+          exported_by_user_id: claims.sub || null,
+        }).eq('id', batch.id).eq('status', 'approved');
+        if (jeIds.length) {
+          await svc.from('claim_audit_log').insert({
+            batch_id: batch.id, action: 'exported', from_status: 'exported', to_status: 'exported',
+            actor_user_id: claims.sub || null, comment: `NetSuite bill 已存在${jeNote}`,
+          });
         }
       }
+      if (jeFailed > 0) failed++;
+      results.push({
+        batch_id: batch.id, batch_no: batch.batch_no, label, vendor: vendor!.label,
+        status: jeFailed > 0 ? 'partial' : billStatus,
+        netsuite_id: bill.id, bill_date: billDate, lines: items.length, total: Math.round(total * 100) / 100,
+        journals: jeResults,
+        error: jeFailed > 0
+          ? `${jeFailed} 張 JE 入唔到: ` + jeResults.filter((r) => r.status === 'error').map((r) => `${r.date} ${r.error}`).join(' | ')
+          : (billStatus === 'duplicate' ? 'externalId already posted (bill 已存在 NetSuite)' : undefined),
+      });
     }
 
     return new Response(

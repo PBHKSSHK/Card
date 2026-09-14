@@ -291,6 +291,13 @@ export default function NewClaimPage() {
     if (due) setPaymentDueDate(due);
   };
 
+  // 一般付款 (非預付款)：明細日期跟發票日期 = Vendor Bill 日期。
+  // 預付款先可以唔同 — 早過發票日期當 accrual，遲過當 prepaid (入 bill 時自動出 JE)。
+  const syncLineDatesToInvoice = (d: string, prepay: boolean = isPrepayment) => {
+    if (claimType !== "payment" || prepay || !d) return;
+    setLines(prev => prev.map(l => (l.line_date === d ? l : { ...l, line_date: d })));
+  };
+
   // Sync default claimant 同 fullName 跟住 profile 更新
   useEffect(() => {
     if (session?.user?.id && !claimantUserId) {
@@ -842,6 +849,7 @@ export default function NewClaimPage() {
       if (inv?.invoice_date) {
         setInvoiceDate(String(inv.invoice_date));
         if (paymentTerms) applyTermsDueDate(paymentTerms, String(inv.invoice_date));
+        syncLineDatesToInvoice(String(inv.invoice_date));
         filled++;
       }
       if (inv?.amount != null && !isNaN(Number(inv.amount))) { setInvoiceAmount(String(inv.amount)); filled++; }
@@ -967,6 +975,19 @@ export default function NewClaimPage() {
         if (invoiceRequired && !invoiceDate) {
           toast({ title: "缺少發票日期", description: "發票日期必填", variant: "destructive" });
           return;
+        }
+        // 一般付款：明細日期必須同發票日期一樣 (發票日期 = Vendor Bill 日期)；
+        // 預付款先可以唔同 — 早過發票日期當 accrual，遲過當 prepaid
+        if (!isPrepayment && invoiceDate) {
+          const badDates = lines.filter(l => l.hkd_amount && parseFloat(l.hkd_amount) > 0 && l.line_date !== invoiceDate);
+          if (badDates.length > 0) {
+            toast({
+              title: "明細日期要同發票日期一樣",
+              description: `有 ${badDates.length} 行日期唔係 ${invoiceDate}。發票日期會做 Vendor Bill 日期；只有剔咗「預付款」先可以用唔同日期 (早過發票日期 = accrual、遲過 = prepaid)`,
+              variant: "destructive",
+            });
+            return;
+          }
         }
         if (!paymentTerms) {
           toast({ title: "缺少付款條款", description: "請揀付款條款 (COD / Net 30 …)", variant: "destructive" });
@@ -1640,8 +1661,14 @@ export default function NewClaimPage() {
                 onChange={(e) => {
                   setInvoiceDate(e.target.value);
                   if (paymentTerms) applyTermsDueDate(paymentTerms, e.target.value || submitDate);
+                  syncLineDatesToInvoice(e.target.value);
                 }}
                 data-testid="input-invoice-date" />
+              <div className="text-[10px] text-muted-foreground mt-0.5">
+                {isPrepayment
+                  ? "預付款：明細日期可以唔同 — 早過發票日期當 accrual (37001010)，遲過當 prepaid (22005010)"
+                  : "明細日期跟發票日期 = Vendor Bill 日期"}
+              </div>
             </div>
             <div>
               <Label className="text-xs">{payeeType === "freelancer" ? "發票總額 (有發票先填)" : "發票總額 *"}</Label>
@@ -1680,11 +1707,13 @@ export default function NewClaimPage() {
             </div>
             <div className="flex items-end pb-1">
               <label className="flex items-center gap-2 text-sm cursor-pointer">
-                <Checkbox checked={isPrepayment} onCheckedChange={(v) => setIsPrepayment(!!v)} data-testid="checkbox-prepayment" />
+                <Checkbox checked={isPrepayment}
+                  onCheckedChange={(v) => { setIsPrepayment(!!v); if (!v) syncLineDatesToInvoice(invoiceDate, false); }}
+                  data-testid="checkbox-prepayment" />
                 <span>
                   預付款 / 按金 (Prepayment)
                   <span className="block text-[10px] text-muted-foreground">
-                    唔係一般費用 — NetSuite 用 Vendor Prepayment / 預付科目入數，之後對沖
+                    明細按月拆行：早過發票日期嘅行入 Accrued Expenses、遲過嘅入 Prepaid Expenses，入 bill 時自動出每月 JE
                   </span>
                 </span>
               </label>
@@ -1788,6 +1817,8 @@ export default function NewClaimPage() {
                         updateLine(l._key, { line_date: clampToPeriod(v, periodMonth) });
                       }
                     }}
+                    disabled={claimType === "payment" && !isPrepayment && !!invoiceDate}
+                    title={claimType === "payment" && !isPrepayment && !!invoiceDate ? "明細日期跟發票日期 (剔預付款先可以改)" : undefined}
                     className="h-7 text-xs" /></td>
                   <td className="px-2 py-2">
                     <ProjectInput

@@ -49,6 +49,7 @@ type PostResult = {
   status: string;
   netsuite_id?: string;
   error?: string;
+  journals?: { date: string; kind: string; total: number; status: string; netsuite_id?: string; error?: string }[];
 };
 
 export default function PaymentsExportPage() {
@@ -75,14 +76,14 @@ export default function PaymentsExportPage() {
 
   const readyBatches = useMemo(
     () => (payments || []).filter(c =>
-      c.status === "approved" && !c.is_prepayment &&
+      c.status === "approved" &&
       (billsSub === "all" || c.entity_code === billsSub)),
     [payments, billsSub],
   );
   const billsSubOptions = useMemo(() => {
     const s = new Set<string>();
     (payments || []).forEach(c => {
-      if (c.status === "approved" && !c.is_prepayment && c.entity_code) s.add(c.entity_code);
+      if (c.status === "approved" && c.entity_code) s.add(c.entity_code);
     });
     return Array.from(s).sort();
   }, [payments]);
@@ -193,7 +194,7 @@ export default function PaymentsExportPage() {
             付款申請 Export
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            已批核付款申請入 NetSuite (Vendor Bills)；預付款用 Vendor Prepayment 手動入後標記
+            已批核付款申請入 NetSuite (Vendor Bills)；預付款會自動開 bill + accrual / prepaid JE (明細早過發票日期 → 37001010，遲過 → 22005010)
           </p>
         </div>
         <Button variant="outline" onClick={handleExportCsv} data-testid="button-export-payments-csv">
@@ -248,6 +249,9 @@ export default function PaymentsExportPage() {
                   <Checkbox checked={selectedIds.has(b.id)} onCheckedChange={(v) => toggleSelect(b.id, !!v)} />
                   <span className="font-mono">{b.batch_no}</span>
                   <span className="font-medium">{b.payee_name}</span>
+                  {b.is_prepayment && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-700 dark:text-purple-400 font-medium" title="會自動開 bill + accrual / prepaid JE">預付</span>
+                  )}
                   {b.is_pre_approved && (
                     <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 font-medium">已簽批</span>
                   )}
@@ -263,12 +267,20 @@ export default function PaymentsExportPage() {
           {postResults.length > 0 && (
             <div className="border-t border-border/40 pt-2 space-y-1">
               {postResults.map((r, i) => (
-                <div key={i} className={`text-[11px] flex items-start gap-2 ${r.status === "error" ? "text-red-600 dark:text-red-400" : r.status === "created" ? "text-emerald-700 dark:text-emerald-400" : "text-muted-foreground"}`}>
+                <div key={i} className={`text-[11px] flex items-start gap-2 flex-wrap ${r.status === "error" ? "text-red-600 dark:text-red-400" : r.status === "partial" ? "text-amber-600 dark:text-amber-500" : r.status === "created" ? "text-emerald-700 dark:text-emerald-400" : "text-muted-foreground"}`}>
                   <span className="font-mono">{r.batch_no}</span>
                   {r.status === "created" && <span>✓ Bill {r.netsuite_id} 已建立{r.vendor ? ` (${r.vendor})` : ""}</span>}
                   {r.status === "duplicate" && <span>已 post 過 (跳過)</span>}
-                  {r.status === "prepayment" && <span>{r.error}</span>}
+                  {r.status === "partial" && <span>⚠ Bill {r.netsuite_id} 已建立，但 {r.error}</span>}
                   {r.status === "error" && <span>✗ {r.error}</span>}
+                  {Array.isArray(r.journals) && r.journals.length > 0 && (
+                    <span className="text-muted-foreground w-full pl-2">
+                      預付款 JE：{r.journals.map((j) =>
+                        `${j.date} ${j.kind === "accrual" ? "accrual" : "prepaid"} HK$${j.total.toFixed(2)} ${
+                          j.status === "created" ? `✓ ${j.netsuite_id}` : j.status === "duplicate" ? "已 post 過" : "✗"}`
+                      ).join(" · ")}
+                    </span>
+                  )}
                 </div>
               ))}
             </div>
@@ -280,11 +292,11 @@ export default function PaymentsExportPage() {
       {prepayReady.length > 0 && (
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">預付款 / 按金 — {prepayReady.length} 張已批核 (唔會自動開 bill)</CardTitle>
+            <CardTitle className="text-sm font-medium">預付款 / 按金 — {prepayReady.length} 張已批核 · 後備手動標記</CardTitle>
           </CardHeader>
           <CardContent className="space-y-1">
             <div className="text-[11px] text-muted-foreground">
-              請喺 NetSuite 用 <b>Vendor Prepayment</b>（或先入預付科目）入數，之後返嚟撳「標記已入數」；收到正式發票時喺 NetSuite 對沖。
+              預付款而家會由上面「入 NetSuite」自動開 bill + 每月 accrual / prepaid JE。只有自動入數失敗、喺 NetSuite 手動入咗嘅時候，先喺呢度撳「標記已入數」。
             </div>
             {prepayReady.map(b => (
               <div key={b.id} className="flex items-center gap-2 text-xs px-1 py-1 rounded hover:bg-muted/40">
