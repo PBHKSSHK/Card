@@ -217,7 +217,8 @@ Deno.serve(async (req) => {
       const problems: string[] = [];
       const lines = linesByBatch.get(batch.id) || [];
 
-      if (!['approved', 'exported'].includes(batch.status)) problems.push(`status 係 ${batch.status}，要 approved 先可以入數`);
+      // dry_run 純預覽 (唔寫 NetSuite)，草稿都可以睇入數計劃
+      if (!dryRun && !['approved', 'exported'].includes(batch.status)) problems.push(`status 係 ${batch.status}，要 approved 先可以入數`);
       if (lines.length === 0) problems.push('冇 approved 明細行');
       if (!batch.batch_no) problems.push('冇 batch no');
 
