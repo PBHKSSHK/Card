@@ -214,10 +214,11 @@ export default function NewClaimPage() {
   const [, params] = useRoute<{ type: string }>("/claims/new/:type");
   const [, editParams] = useRoute<{ id: string }>("/claims/:id/edit");
   const [, payEditParams] = useRoute<{ id: string }>("/payments/:id/edit");
+  const [, preEditParams] = useRoute<{ id: string }>("/payments/preapproved/:id/edit");
   const [, setLocation] = useLocation();
-  const editId = editParams?.id || payEditParams?.id || null;
+  const editId = editParams?.id || payEditParams?.id || preEditParams?.id || null;
   const isEdit = !!editId;
-  const isPayRoute = !!payEditParams;  // 由 /payments/:id/edit 入嚟
+  const isPayRoute = !!payEditParams || !!preEditParams;  // 由 /payments/.../edit 入嚟
   // 付款申請分開兩個入口: /claims/new/payment_supplier (供應商) 同
   // /claims/new/payment_freelancer (自由工作者) — 類型由入口鎖死。
   const routeType = params?.type || "";
@@ -352,7 +353,7 @@ export default function NewClaimPage() {
             description: `Claim 狀態為「${batch.status}」，只有 draft / rejected 可以修改`,
             variant: "destructive",
           });
-          setLocation(batch.claim_type === "payment" ? `/payments/${editId}` : `/claims/${editId}`);
+          setLocation(batch.claim_type === "payment" ? (batch.is_pre_approved ? `/payments/preapproved/${editId}` : `/payments/${editId}`) : `/claims/${editId}`);
           return;
         }
 
@@ -365,7 +366,7 @@ export default function NewClaimPage() {
             description: "只有 claimant 或 admin/owner 可以修改",
             variant: "destructive",
           });
-          setLocation(batch.claim_type === "payment" ? `/payments/${editId}` : `/claims/${editId}`);
+          setLocation(batch.claim_type === "payment" ? (batch.is_pre_approved ? `/payments/preapproved/${editId}` : `/payments/${editId}`) : `/claims/${editId}`);
           return;
         }
 
@@ -1426,7 +1427,7 @@ export default function NewClaimPage() {
       queryClient.invalidateQueries({ queryKey: ["claim-batches"] });
       queryClient.invalidateQueries({ queryKey: ["claim-batch", batch.id] });
       queryClient.invalidateQueries({ queryKey: ["claim-lines", batch.id] });
-      setLocation(claimType === "payment" ? `/payments/${batch.id}` : `/claims/${batch.id}`);
+      setLocation(claimType === "payment" ? (isPreApproved ? `/payments/preapproved/${batch.id}` : `/payments/${batch.id}`) : `/claims/${batch.id}`);
     } catch (err: any) {
       console.error(err);
       toast({ title: "錯誤", description: err.message || "保存失敗", variant: "destructive" });
@@ -1458,7 +1459,7 @@ export default function NewClaimPage() {
       <div className="flex items-center gap-3">
         <Button variant="ghost" size="sm" onClick={() => setLocation(
           isEdit
-            ? (claimType === "payment" ? `/payments/${editId}` : `/claims/${editId}`)
+            ? (claimType === "payment" ? (isPreApproved ? `/payments/preapproved/${editId}` : `/payments/${editId}`) : `/claims/${editId}`)
             : (claimType === "payment" ? paymentListPath : "/claims")
         )} data-testid="button-back">
           <ArrowLeft size={16} className="mr-1" /> 返回

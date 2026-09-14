@@ -85,6 +85,8 @@ function AppRouter() {
         <Route path="/payments/export">{() => <Gate module="claims" superOnly component={PaymentsExportPage} />}</Route>
         {/* 已簽批付款 (老闆紙上簽名，免審批) — 自己嘅 dashboard */}
         <Route path="/payments/preapproved">{() => <Gate module="claims" component={PaymentsPreApprovedPage} />}</Route>
+        <Route path="/payments/preapproved/:id/edit">{() => <Gate module="claims" component={NewClaimPage} />}</Route>
+        <Route path="/payments/preapproved/:id">{() => <Gate module="claims" component={ClaimDetailPage} />}</Route>
         {/* 付款申請詳情/修改用自己嘅 URL — sidebar 先識亮「付款申請」 */}
         <Route path="/payments/:id/edit">{() => <Gate module="claims" component={NewClaimPage} />}</Route>
         <Route path="/payments/:id">{() => <Gate module="claims" component={ClaimDetailPage} />}</Route>

@@ -1,7 +1,7 @@
 // ClaimDetailPage.tsx
 // 查看 / 批核 / 退回 / 出 Journal CSV
 // 支援: per-line approve/reject + 事後補 receipt (submitted/approved 之後依然可以加)
-import { useMemo, useState, useRef } from "react";
+import { useMemo, useState, useRef, useEffect } from "react";
 import { useRoute, useLocation } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
@@ -37,12 +37,14 @@ const STATUS_LABELS: Record<string, { label: string; color: string }> = {
 export default function ClaimDetailPage() {
   const [, params] = useRoute<{ id: string }>("/claims/:id");
   const [, payParams] = useRoute<{ id: string }>("/payments/:id");
+  // 已簽批付款有自己嘅 URL — sidebar 先識亮「已簽批付款」
+  const [, preParams] = useRoute<{ id: string }>("/payments/preapproved/:id");
   const [, setLocation] = useLocation();
   const { profile, session, isSuperUser } = useAuth();
   const { toast } = useToast();
   const qc = useQueryClient();
 
-  const claimId = params?.id || payParams?.id;
+  const claimId = params?.id || payParams?.id || preParams?.id;
   const [comment, setComment] = useState("");
   const [processing, setProcessing] = useState(false);
   // per-line reject reason being typed (lineId -> text)
@@ -66,6 +68,14 @@ export default function ClaimDetailPage() {
     },
     enabled: !!claimId,
   });
+
+  // 由 /payments/:id 入嚟但其實係已簽批單 → 轉去 /payments/preapproved/:id，
+  // 等 sidebar 亮返「已簽批付款」(Export 頁 / inbox 嘅 link 都係用 /payments/:id)
+  useEffect(() => {
+    if (batch?.is_pre_approved && payParams?.id) {
+      setLocation(`/payments/preapproved/${payParams.id}`, { replace: true });
+    }
+  }, [batch?.is_pre_approved, payParams?.id]);
 
   // Fetch lines
   const { data: lines = [] } = useQuery({
@@ -627,7 +637,7 @@ export default function ClaimDetailPage() {
     <div className="space-y-4 max-w-6xl">
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-3">
-          <Button variant="ghost" size="sm" onClick={() => setLocation(claimType === "payment" ? "/payments" : "/claims")} data-testid="button-back">
+          <Button variant="ghost" size="sm" onClick={() => setLocation(claimType === "payment" ? (batch?.is_pre_approved ? "/payments/preapproved" : "/payments") : "/claims")} data-testid="button-back">
             <ArrowLeft size={16} className="mr-1" /> 返回
           </Button>
           <div className="flex items-center gap-2">
@@ -999,7 +1009,7 @@ export default function ClaimDetailPage() {
           {(status === "draft" || status === "rejected") && (isClaimant || isSuperUser) && (
             <Button
               variant="outline"
-              onClick={() => setLocation(claimType === "payment" ? `/payments/${claimId}/edit` : `/claims/${claimId}/edit`)}
+              onClick={() => setLocation(claimType === "payment" ? (batch?.is_pre_approved ? `/payments/preapproved/${claimId}/edit` : `/payments/${claimId}/edit`) : `/claims/${claimId}/edit`)}
               disabled={processing}
               data-testid="button-edit-draft"
             >
