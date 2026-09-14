@@ -96,6 +96,7 @@ export default function PaymentsPage() {
 
   const { data: payments, isLoading } = useQuery({
     queryKey: ["payment-batches"],
+    staleTime: 0,  // 列表每次入頁都 refetch (global 預設 staleTime Infinity)
     queryFn: async () => {
       const { data, error } = await supabase
         .from("claim_batches")

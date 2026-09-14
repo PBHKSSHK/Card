@@ -1424,7 +1424,12 @@ export default function NewClaimPage() {
       });
       // Fix #3: refresh the claims list + detail so the new/updated claim shows
       // without a hard reload.
+      // staleTime 係 Infinity — 所有顯示 batches 嘅列表 (claims / 付款申請 /
+      // 已簽批付款 / inbox) 都要 invalidate，否則返去列表會見到舊 cache
       queryClient.invalidateQueries({ queryKey: ["claim-batches"] });
+      queryClient.invalidateQueries({ queryKey: ["payment-batches"] });
+      queryClient.invalidateQueries({ queryKey: ["payment-batches-preapproved"] });
+      queryClient.invalidateQueries({ queryKey: ["approval-inbox"] });
       queryClient.invalidateQueries({ queryKey: ["claim-batch", batch.id] });
       queryClient.invalidateQueries({ queryKey: ["claim-lines", batch.id] });
       setLocation(claimType === "payment" ? (isPreApproved ? `/payments/preapproved/${batch.id}` : `/payments/${batch.id}`) : `/claims/${batch.id}`);

@@ -61,6 +61,7 @@ export default function ClaimsPage() {
 
   const { data: claims, isLoading } = useQuery({
     queryKey: ["claim-batches"],
+    staleTime: 0,  // 列表每次入頁都 refetch (global 預設 staleTime Infinity)
     queryFn: async () => {
       // 付款申請有自己嘅面板 (/payments) — 呢度只顯示日常駛費 + 交通費
       const { data, error } = await supabase

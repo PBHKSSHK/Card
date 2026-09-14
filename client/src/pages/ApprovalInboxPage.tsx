@@ -46,6 +46,7 @@ export default function ApprovalInboxPage({ family = "claims" }: { family?: "cla
   // 拉 inbox 清單
   const { data: items = [], isLoading } = useQuery({
     queryKey: ["approval-inbox", family, mode, session?.user?.id, isSuperUser],
+    staleTime: 0,  // 列表每次入頁都 refetch (global 預設 staleTime Infinity)
     queryFn: async () => {
       if (!session?.user?.id) return [];
       let q = supabase.from("claim_batches_with_team_head").select("*");
