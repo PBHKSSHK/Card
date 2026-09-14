@@ -34,7 +34,7 @@ const claimNavItems = [
 const paymentNavItems = [
   { href: "/payments/inbox", label: "審批 Inbox", icon: Inbox, superOnly: false },
   { href: "/payments", label: "付款申請", icon: HandCoins, superOnly: false },
-  { href: "/payments/preapproved", label: "已簽批付款", icon: ShieldCheck, superOnly: false },
+  { href: "/payments/preapproved", label: "已簽批付款", icon: ShieldCheck, superOnly: true },
   { href: "/payments/export", label: "付款申請 Export", icon: FileDown, superOnly: true },
 ];
 

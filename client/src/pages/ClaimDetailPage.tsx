@@ -71,11 +71,12 @@ export default function ClaimDetailPage() {
 
   // 由 /payments/:id 入嚟但其實係已簽批單 → 轉去 /payments/preapproved/:id，
   // 等 sidebar 亮返「已簽批付款」(Export 頁 / inbox 嘅 link 都係用 /payments/:id)
+  // (已簽批面板只限 owner/admin — 其他人留喺 /payments/:id)
   useEffect(() => {
-    if (batch?.is_pre_approved && payParams?.id) {
+    if (batch?.is_pre_approved && payParams?.id && isSuperUser) {
       setLocation(`/payments/preapproved/${payParams.id}`, { replace: true });
     }
-  }, [batch?.is_pre_approved, payParams?.id]);
+  }, [batch?.is_pre_approved, payParams?.id, isSuperUser]);
 
   // Fetch lines
   const { data: lines = [] } = useQuery({
@@ -165,8 +166,8 @@ export default function ClaimDetailPage() {
 
   const claimType = batch?.claim_type || "expenses";
   const status = batch?.status || "draft";
-  // 已簽批付款：提交後 (submitted / approved)、未入 NetSuite 前仍可修改
-  const preReopenable = claimType === "payment" && !!batch?.is_pre_approved
+  // 已簽批付款 (只限 owner/admin)：提交後 (submitted / approved)、未入 NetSuite 前仍可修改
+  const preReopenable = claimType === "payment" && !!batch?.is_pre_approved && isSuperUser
     && (status === "submitted" || status === "approved") && !batch?.exported_at;
 
   // Permission checks
@@ -640,7 +641,7 @@ export default function ClaimDetailPage() {
     <div className="space-y-4 max-w-6xl">
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-3">
-          <Button variant="ghost" size="sm" onClick={() => setLocation(claimType === "payment" ? (batch?.is_pre_approved ? "/payments/preapproved" : "/payments") : "/claims")} data-testid="button-back">
+          <Button variant="ghost" size="sm" onClick={() => setLocation(claimType === "payment" ? (batch?.is_pre_approved && isSuperUser ? "/payments/preapproved" : "/payments") : "/claims")} data-testid="button-back">
             <ArrowLeft size={16} className="mr-1" /> 返回
           </Button>
           <div className="flex items-center gap-2">
@@ -1012,7 +1013,7 @@ export default function ClaimDetailPage() {
           {(status === "draft" || status === "rejected" || preReopenable) && (isClaimant || isSuperUser) && (
             <Button
               variant="outline"
-              onClick={() => setLocation(claimType === "payment" ? (batch?.is_pre_approved ? `/payments/preapproved/${claimId}/edit` : `/payments/${claimId}/edit`) : `/claims/${claimId}/edit`)}
+              onClick={() => setLocation(claimType === "payment" ? (batch?.is_pre_approved && isSuperUser ? `/payments/preapproved/${claimId}/edit` : `/payments/${claimId}/edit`) : `/claims/${claimId}/edit`)}
               disabled={processing}
               data-testid="button-edit-draft"
             >

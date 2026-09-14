@@ -229,7 +229,7 @@ export default function NewClaimPage() {
   );
   // claim type — new 由 URL 決定；edit 由 loaded batch 決定（先用初始值，load 完會更新）
   const claimType: ClaimType = initialType;
-  const { profile, session } = useAuth();
+  const { profile, session, loading: authLoading } = useAuth();
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const isSuperUser = profile?.role === "owner" || profile?.role === "admin";
@@ -337,9 +337,19 @@ export default function NewClaimPage() {
   // Lines
   const [lines, setLines] = useState<LineForm[]>([makeBlankLine(1, claimType)]);
 
-  // === EDIT MODE: load existing batch + lines + attachments ===
+  // 已簽批付款只限 owner/admin：非 super user 開 _pre 表單即刻轉返付款申請
   useEffect(() => {
-    if (!isEdit || !editId) return;
+    if (authLoading || !profile) return;
+    if (!isEdit && routeType.endsWith("_pre") && !isSuperUser) {
+      toast({ title: "已簽批付款只限 Owner / Admin 使用", variant: "destructive" });
+      setLocation("/payments", { replace: true });
+    }
+  }, [authLoading, profile, routeType, isSuperUser, isEdit]);
+
+  // === EDIT MODE: load existing batch + lines + attachments ===
+  // (等 auth profile load 完先跑，確保 isSuperUser 準確)
+  useEffect(() => {
+    if (!isEdit || !editId || authLoading) return;
     let cancelled = false;
     (async () => {
       try {
@@ -364,6 +374,13 @@ export default function NewClaimPage() {
             variant: "destructive",
           });
           setLocation(batch.claim_type === "payment" ? (batch.is_pre_approved ? `/payments/preapproved/${editId}` : `/payments/${editId}`) : `/claims/${editId}`);
+          return;
+        }
+
+        // 已簽批付款只限 owner/admin 修改
+        if (batch.is_pre_approved && !isSuperUser) {
+          toast({ title: "已簽批付款只限 Owner / Admin 修改", variant: "destructive" });
+          setLocation(`/payments/${editId}`);
           return;
         }
 
@@ -481,7 +498,7 @@ export default function NewClaimPage() {
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editId]);
+  }, [editId, authLoading]);
 
   async function openExistingAttachment(path: string) {
     const { data } = await supabase.storage.from("documents").createSignedUrl(path, 3600);
