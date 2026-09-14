@@ -50,7 +50,10 @@ export default function ApprovalInboxPage({ family = "claims" }: { family?: "cla
       if (!session?.user?.id) return [];
       let q = supabase.from("claim_batches_with_team_head").select("*");
       // claims inbox 唔顯示付款申請；付款申請有自己嘅 inbox
-      q = family === "payment" ? q.eq("claim_type", "payment") : q.neq("claim_type", "payment");
+      // 已簽批付款 (老闆紙上簽名) 唔經審批，唔入 inbox
+      q = family === "payment"
+        ? q.eq("claim_type", "payment").eq("is_pre_approved", false)
+        : q.neq("claim_type", "payment");
       if (mode === "team_head") {
         q = q.eq("status", "submitted");
         if (!isSuperUser) q = q.eq("assigned_team_head_user_id", session.user.id);

@@ -1,34 +1,33 @@
-// PaymentsPage.tsx
-// 付款申請 (Payment Requisition) 面板 — 同 Claim Forms 分開
-// - List view: claim_type='payment' 嘅 batches
-// - 新增 → /claims/new/payment (共用 NewClaimPage)
-// - Owner/Admin: 「入 NetSuite (Bills)」 — approved 批次直接 post 做 vendor bill,
-//   供應商發票號碼做 Reference No
+// PaymentsPreApprovedPage.tsx
+// 已簽批付款 (Pre-approved Payment Requisition) 面板 — 老闆已經喺紙上簽名批准
+// 嘅供應商 / 自由工作者付款：同事上載已簽名發票 + 跟付款申請版面入資料，
+// 提交後唔經 app 審批，直接變 approved，Owner/Admin 喺「付款申請 Export」
+// 入 NetSuite (Vendor Bills)。
+// - List view: claim_type='payment' AND is_pre_approved=true
+// - 新增 → /claims/new/payment_supplier_pre / payment_freelancer_pre (共用 NewClaimPage)
 import { useState, useMemo } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/auth";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { usePagination, PaginationFooter } from "@/components/PaginationFooter";
-import { useToast } from "@/hooks/use-toast";
 import {
-  HandCoins, Plus, Filter, CheckCircle2, Clock, XCircle, FileCheck,
-  Send, Eye, Loader2, UploadCloud, Building2, UserRound, RefreshCw,
+  ShieldCheck, Filter, CheckCircle2, Clock, XCircle, FileCheck, Send, Eye,
+  Building2, UserRound, FileDown,
 } from "lucide-react";
 
 const STATUS_LABELS: Record<string, { label: string; color: string; icon: any }> = {
   draft: { label: "草稿", color: "bg-muted text-muted-foreground", icon: Clock },
-  submitted: { label: "已提交", color: "bg-blue-500/15 text-blue-700 dark:text-blue-400", icon: Send },
+  submitted: { label: "已提交 (待自動批核)", color: "bg-blue-500/15 text-blue-700 dark:text-blue-400", icon: Send },
   team_head_approved: { label: "Team Head 已簽", color: "bg-amber-500/15 text-amber-700 dark:text-amber-400", icon: FileCheck },
-  approved: { label: "已批核", color: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400", icon: CheckCircle2 },
+  approved: { label: "已批核 · 待入 NetSuite", color: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400", icon: CheckCircle2 },
   exported: { label: "已入 NetSuite", color: "bg-purple-500/15 text-purple-700 dark:text-purple-400", icon: FileCheck },
   rejected: { label: "已退回", color: "bg-red-500/15 text-red-700 dark:text-red-400", icon: XCircle },
 };
@@ -41,12 +40,9 @@ interface PaymentBatch {
   nick_name: string | null;
   payee_name: string | null;
   payee_type: string | null;
-  payment_method: string | null;
   payment_due_date: string | null;
   supplier_invoice_no: string | null;
   invoice_date: string | null;
-  invoice_amount: number | null;
-  invoice_currency: string | null;
   is_prepayment: boolean;
   submit_date: string | null;
   period_month: string | null;
@@ -61,47 +57,21 @@ interface PaymentBatch {
   created_at: string;
 }
 
-export default function PaymentsPage() {
+export default function PaymentsPreApprovedPage() {
   const { isSuperUser } = useAuth();
-  const { toast } = useToast();
-  const qc = useQueryClient();
   const [filterStatus, setFilterStatus] = useState<string>("all");
   const [filterPayeeType, setFilterPayeeType] = useState<string>("all");
   const [filterPeriod, setFilterPeriod] = useState<string>("all");
   const [searchText, setSearchText] = useState("");
-  const [syncingVendors, setSyncingVendors] = useState(false);
-
-  // 同步 NetSuite 參考資料 (vendors + projects/customers) — owner/admin only。
-  // 每日 03:00 HKT 有 pg_cron 自動同步，呢個掣係即時手動 refresh。
-  const handleSyncVendors = async () => {
-    setSyncingVendors(true);
-    try {
-      const { data: v, error: vErr } = await supabase.functions.invoke("netsuite-sync-vendors", { body: {} });
-      if (vErr) throw new Error(vErr.message || "Edge Function 呼叫失敗");
-      if (v?.error) throw new Error(v.error);
-      const { data: p, error: pErr } = await supabase.functions.invoke("netsuite-sync-projects", { body: {} });
-      if (pErr) throw new Error(pErr.message || "Edge Function 呼叫失敗");
-      if (p?.error) throw new Error(p.error);
-      toast({
-        title: "NetSuite 已同步 ✓",
-        description: `${v.fetched} 個 vendors（收起 ${v.deactivated}）· ${p.projects} 個 projects（新 ${p.new_projects}，收起 ${p.deactivated}）· ${p.customers_mapped} 個 customers`,
-      });
-      qc.invalidateQueries({ queryKey: ["ns_vendor_directory"] });
-      qc.invalidateQueries({ predicate: (q) => String(q.queryKey[0] || "").startsWith("ns_project_codes") || q.queryKey[0] === "ns-project-codes" });
-    } catch (err: any) {
-      toast({ title: "同步失敗", description: err.message, variant: "destructive" });
-    }
-    setSyncingVendors(false);
-  };
 
   const { data: payments, isLoading } = useQuery({
-    queryKey: ["payment-batches"],
+    queryKey: ["payment-batches-preapproved"],
     queryFn: async () => {
       const { data, error } = await supabase
         .from("claim_batches")
         .select("*")
         .eq("claim_type", "payment")
-        .eq("is_pre_approved", false)  // 已簽批付款有自己嘅面板 (/payments/preapproved)
+        .eq("is_pre_approved", true)
         .order("created_at", { ascending: false });
       if (error) throw error;
       return (data || []) as PaymentBatch[];
@@ -138,46 +108,43 @@ export default function PaymentsPage() {
     const arr = payments || [];
     return {
       total: arr.length,
-      pending: arr.filter(c => ["submitted", "team_head_approved"].includes(c.status)).length,
-      approved: arr.filter(c => c.status === "approved").length,
+      ready: arr.filter(c => c.status === "approved").length,
+      exported: arr.filter(c => c.status === "exported").length,
       total_hkd: arr.reduce((s, c) => s + Number(c.total_hkd || 0), 0),
     };
   }, [payments]);
-
-  const METHOD_LABELS: Record<string, string> = {
-    bank_transfer: "銀行轉賬", fps: "FPS", cheque: "支票", autopay: "Autopay", other: "其他",
-  };
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-            <HandCoins className="text-primary" size={24} />
-            付款申請 Payment Requisition
+            <ShieldCheck className="text-emerald-600" size={24} />
+            已簽批付款 Pre-approved Payments
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            申請付款俾 Supplier 供應商 / Freelancer 自由工作者 — 批核後入 NetSuite 做 Bills
+            老闆已喺紙上簽名批准嘅供應商 / 自由工作者付款 — 上載已簽名發票、跟付款申請版面入資料，提交後免審批直接批核，可即時入 NetSuite
           </p>
         </div>
         <div className="flex items-center gap-2">
           {isSuperUser && (
-            <Button variant="ghost" size="sm" onClick={handleSyncVendors} disabled={syncingVendors}
-              title="由 NetSuite 更新收款人名冊 + project codes / customers（每日 03:00 亦會自動同步）" data-testid="button-sync-vendors">
-              {syncingVendors ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-1.5" />}
-              同步 NetSuite
-            </Button>
+            <Link href="/payments/export">
+              <Button variant="ghost" size="sm" data-testid="button-goto-export">
+                <FileDown size={16} className="mr-1.5" />
+                付款申請 Export
+              </Button>
+            </Link>
           )}
-          <Link href="/claims/new/payment_freelancer">
-            <Button variant="outline" data-testid="button-new-payment-freelancer">
+          <Link href="/claims/new/payment_freelancer_pre">
+            <Button variant="outline" data-testid="button-new-preapproved-freelancer">
               <UserRound size={16} className="mr-2" />
-              新增 自由工作者付款
+              新增 自由工作者付款 (已簽批)
             </Button>
           </Link>
-          <Link href="/claims/new/payment_supplier">
-            <Button data-testid="button-new-payment-supplier">
+          <Link href="/claims/new/payment_supplier_pre">
+            <Button data-testid="button-new-preapproved-supplier">
               <Building2 size={16} className="mr-2" />
-              新增 供應商付款
+              新增 供應商付款 (已簽批)
             </Button>
           </Link>
         </div>
@@ -190,12 +157,12 @@ export default function PaymentsPage() {
           <div className="text-2xl font-bold tabular-nums mt-1">{stats.total}</div>
         </CardContent></Card>
         <Card><CardContent className="p-4">
-          <div className="text-xs text-muted-foreground">待批核</div>
-          <div className="text-2xl font-bold tabular-nums mt-1 text-amber-600 dark:text-amber-400">{stats.pending}</div>
+          <div className="text-xs text-muted-foreground">待入 NetSuite</div>
+          <div className="text-2xl font-bold tabular-nums mt-1 text-emerald-600 dark:text-emerald-400">{stats.ready}</div>
         </CardContent></Card>
         <Card><CardContent className="p-4">
-          <div className="text-xs text-muted-foreground">已批核 (未入數)</div>
-          <div className="text-2xl font-bold tabular-nums mt-1 text-emerald-600 dark:text-emerald-400">{stats.approved}</div>
+          <div className="text-xs text-muted-foreground">已入 NetSuite</div>
+          <div className="text-2xl font-bold tabular-nums mt-1 text-purple-600 dark:text-purple-400">{stats.exported}</div>
         </CardContent></Card>
         <Card><CardContent className="p-4">
           <div className="text-xs text-muted-foreground">總金額 (HKD)</div>
@@ -205,29 +172,27 @@ export default function PaymentsPage() {
         </CardContent></Card>
       </div>
 
-      {/* Bills 入數 / 預付款標記已搬去「付款申請 Export」頁 (/payments/export) */}
-
       {/* Filters */}
       <Card><CardContent className="p-4">
         <div className="flex items-center gap-3 flex-wrap">
           <Filter size={16} className="text-muted-foreground" />
           <Input
-            placeholder="搜尋 batch no / 申請人 / 收款人 / INV# ..."
+            placeholder="搜尋 batch no / 收款人 / 發票號 / charge to..."
             value={searchText}
             onChange={(e) => setSearchText(e.target.value)}
             className="max-w-xs"
             data-testid="input-search"
           />
           <Select value={filterPayeeType} onValueChange={setFilterPayeeType}>
-            <SelectTrigger className="w-[170px]" data-testid="select-payee-type"><SelectValue /></SelectTrigger>
+            <SelectTrigger className="w-[150px]" data-testid="select-payee-type"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">全部類型</SelectItem>
-              <SelectItem value="supplier">Supplier 供應商</SelectItem>
-              <SelectItem value="freelancer">Freelancer 自由工作者</SelectItem>
+              <SelectItem value="all">全部收款人類型</SelectItem>
+              <SelectItem value="supplier">供應商</SelectItem>
+              <SelectItem value="freelancer">自由工作者</SelectItem>
             </SelectContent>
           </Select>
           <Select value={filterStatus} onValueChange={setFilterStatus}>
-            <SelectTrigger className="w-[150px]" data-testid="select-status"><SelectValue /></SelectTrigger>
+            <SelectTrigger className="w-[190px]" data-testid="select-status"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">全部狀態</SelectItem>
               {Object.entries(STATUS_LABELS).map(([k, v]) => (
@@ -253,9 +218,9 @@ export default function PaymentsPage() {
           </div>
         ) : filtered.length === 0 ? (
           <div className="p-12 text-center text-muted-foreground">
-            <HandCoins size={32} className="mx-auto opacity-40 mb-3" />
-            <p className="text-sm">未有付款申請</p>
-            <p className="text-xs mt-1">點擊右上方「新增 付款申請」</p>
+            <ShieldCheck size={32} className="mx-auto opacity-40 mb-3" />
+            <p className="text-sm">未有已簽批付款紀錄</p>
+            <p className="text-xs mt-1">點擊右上方按鈕新增</p>
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -264,8 +229,8 @@ export default function PaymentsPage() {
                 <tr>
                   <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3">Batch No</th>
                   <th className="text-left text-xs font-medium text-muted-foreground px-3 py-3">收款人</th>
-                  <th className="text-left text-xs font-medium text-muted-foreground px-3 py-3">Supplier INV#</th>
-                  <th className="text-left text-xs font-medium text-muted-foreground px-3 py-3">申請人</th>
+                  <th className="text-left text-xs font-medium text-muted-foreground px-3 py-3">發票</th>
+                  <th className="text-left text-xs font-medium text-muted-foreground px-3 py-3">入單人</th>
                   <th className="text-left text-xs font-medium text-muted-foreground px-3 py-3">Charge To</th>
                   <th className="text-right text-xs font-medium text-muted-foreground px-3 py-3">金額 (HKD)</th>
                   <th className="text-left text-xs font-medium text-muted-foreground px-3 py-3">到期日</th>
@@ -278,28 +243,30 @@ export default function PaymentsPage() {
                   const status = STATUS_LABELS[c.status] || STATUS_LABELS.draft;
                   const StatusIcon = status.icon;
                   return (
-                    <tr key={c.id} className="border-b border-border/40 hover:bg-muted/20" data-testid={`row-payment-${c.batch_no}`}>
+                    <tr key={c.id} className="border-b border-border/40 hover:bg-muted/20" data-testid={`row-preapproved-${c.batch_no}`}>
                       <td className="px-4 py-3 text-sm font-mono">{c.batch_no || "—"}</td>
                       <td className="px-3 py-3 text-sm">
-                        <div className="font-medium">
+                        <div className="font-medium flex items-center gap-1.5">
+                          {c.payee_type === "freelancer"
+                            ? <UserRound size={13} className="text-primary shrink-0" />
+                            : <Building2 size={13} className="text-primary shrink-0" />}
                           {c.payee_name || "—"}
                           {c.is_prepayment && (
-                            <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-700 dark:text-purple-400 font-medium">預付</span>
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-700 dark:text-purple-400 font-medium">預付</span>
                           )}
                         </div>
                         <div className="text-xs text-muted-foreground">
-                          {c.payee_type === "freelancer" ? "Freelancer" : c.payee_type === "supplier" ? "Supplier" : ""}
-                          {c.payment_method ? ` · ${METHOD_LABELS[c.payment_method] || c.payment_method}` : ""}
+                          {c.payee_type === "freelancer" ? "自由工作者" : "供應商"}
                         </div>
                       </td>
-                      <td className="px-3 py-3 text-xs font-mono">
-                        {c.supplier_invoice_no || "—"}
-                        {c.invoice_date && <div className="text-muted-foreground">{c.invoice_date}</div>}
+                      <td className="px-3 py-3 text-xs">
+                        <div className="font-mono">{c.supplier_invoice_no || "—"}</div>
+                        {c.invoice_date && <div className="text-muted-foreground tabular-nums">{c.invoice_date}</div>}
                       </td>
                       <td className="px-3 py-3 text-sm">{c.nick_name || c.full_name || "—"}</td>
                       <td className="px-3 py-3 text-xs">
                         <div className="font-mono">{c.charge_to_code}</div>
-                        {c.department_name && <div className="text-muted-foreground truncate max-w-[140px]">{c.department_name}</div>}
+                        {c.department_name && <div className="text-muted-foreground truncate max-w-[160px]">{c.department_name}</div>}
                       </td>
                       <td className="px-3 py-3 text-sm text-right tabular-nums font-medium">
                         ${Number(c.total_hkd || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}

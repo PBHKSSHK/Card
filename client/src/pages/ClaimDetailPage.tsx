@@ -679,6 +679,10 @@ export default function ClaimDetailPage() {
                 {batch.is_prepayment && (
                   <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-700 dark:text-purple-400 font-medium">預付款</span>
                 )}
+                {batch.is_pre_approved && (
+                  <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 font-medium"
+                    title="老闆已喺紙上簽名批准，提交後直接批核">已簽批</span>
+                )}
               </div>
               <div className="text-xs text-muted-foreground">
                 {batch.payee_type === "freelancer" ? "Freelancer 自由工作者" : batch.payee_type === "supplier" ? "Supplier 供應商" : ""}

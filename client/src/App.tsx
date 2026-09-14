@@ -21,6 +21,7 @@ import BankUploadCentre from "@/pages/BankUploadCentre";
 import ClaimsPage from "@/pages/ClaimsPage";
 import PaymentsPage from "@/pages/PaymentsPage";
 import PaymentsExportPage from "@/pages/PaymentsExportPage";
+import PaymentsPreApprovedPage from "@/pages/PaymentsPreApprovedPage";
 import NewClaimPage from "@/pages/NewClaimPage";
 import ClaimDetailPage from "@/pages/ClaimDetailPage";
 import ApprovalInboxPage from "@/pages/ApprovalInboxPage";
@@ -82,6 +83,8 @@ function AppRouter() {
         <Route path="/payments">{() => <Gate module="claims" component={PaymentsPage} />}</Route>
         <Route path="/payments/inbox">{() => <Gate module="claims" component={PaymentsInbox} />}</Route>
         <Route path="/payments/export">{() => <Gate module="claims" superOnly component={PaymentsExportPage} />}</Route>
+        {/* 已簽批付款 (老闆紙上簽名，免審批) — 自己嘅 dashboard */}
+        <Route path="/payments/preapproved">{() => <Gate module="claims" component={PaymentsPreApprovedPage} />}</Route>
         {/* 付款申請詳情/修改用自己嘅 URL — sidebar 先識亮「付款申請」 */}
         <Route path="/payments/:id/edit">{() => <Gate module="claims" component={NewClaimPage} />}</Route>
         <Route path="/payments/:id">{() => <Gate module="claims" component={ClaimDetailPage} />}</Route>

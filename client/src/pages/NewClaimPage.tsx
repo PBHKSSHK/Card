@@ -222,8 +222,11 @@ export default function NewClaimPage() {
   // Payment requisition (付款申請) — 收款人 + 付款資料
   const [payeeName, setPayeeName] = useState("");
   const [payeeType, setPayeeType] = useState(
-    routeType === "payment_freelancer" ? "freelancer" : "supplier"
+    routeType.startsWith("payment_freelancer") ? "freelancer" : "supplier"
   );
+  // 已簽批付款 (老闆已喺紙上簽名批准)：入口 /claims/new/payment_*_pre —
+  // 提交後唔經審批，直接 approved，可即時喺付款申請 Export 入 NetSuite
+  const [isPreApproved, setIsPreApproved] = useState(routeType.endsWith("_pre"));
   const [payeeFocus, setPayeeFocus] = useState(false);
   // IR56M 個人資料 (freelancer 付款先用)
   const [payeeHkid, setPayeeHkid] = useState("");
@@ -361,6 +364,7 @@ export default function NewClaimPage() {
         setInvoiceAmount(batch.invoice_amount != null ? String(batch.invoice_amount) : "");
         setInvoiceCurrency(batch.invoice_currency || "HKD");
         setIsPrepayment(!!batch.is_prepayment);
+        setIsPreApproved(!!batch.is_pre_approved);
 
         // 2. Load lines
         const { data: existingLines } = await supabase
@@ -1096,6 +1100,7 @@ export default function NewClaimPage() {
         invoice_amount: invoiceAmount ? parseFloat(invoiceAmount) : null,
         invoice_currency: invoiceCurrency || "HKD",
         is_prepayment: isPrepayment,
+        is_pre_approved: isPreApproved,
       } : {
         // claim forms 都有付款資料 (同事自己收款方式)；發票/收款人欄位保持 null
         payee_name: null, payee_type: null,
@@ -1107,7 +1112,7 @@ export default function NewClaimPage() {
         payment_due_date: null, supplier_invoice_no: null,
         payee_hkid: null, payee_address: null, payee_gender: null, payee_phone: null,
         invoice_date: null, payment_terms: null, invoice_amount: null,
-        invoice_currency: null, is_prepayment: false,
+        invoice_currency: null, is_prepayment: false, is_pre_approved: false,
       };
       let batch: any;
 
@@ -1342,8 +1347,38 @@ export default function NewClaimPage() {
         actor_user_id: session.user.id,
       });
 
+      // 已簽批付款：提交驗證 (發票必填 / 查重) 過咗之後即刻自批 approved —
+      // 老闆已喺紙上簽名，唔經 app 審批，直接可以喺付款申請 Export 入 NetSuite
+      const autoApproved = asSubmit && isPreApproved && claimType === "payment";
+      if (autoApproved) {
+        const { data: approvedRow, error: apprErr } = await supabase
+          .from("claim_batches")
+          .update({
+            status: "approved",
+            approver_user_id: session.user.id,
+            approved_at: new Date().toISOString(),
+          })
+          .eq("id", batch.id)
+          .eq("status", "submitted")
+          .select()
+          .single();
+        if (apprErr) throw new Error(`已提交但自動批核失敗：${apprErr.message}`);
+        if (!approvedRow) throw new Error("已提交但自動批核失敗：狀態已變或無權限");
+        batch = approvedRow;
+        await supabase.from("claim_audit_log").insert({
+          batch_id: batch.id,
+          action: "approved",
+          from_status: "submitted",
+          to_status: "approved",
+          actor_user_id: session.user.id,
+          comment: "已簽批付款 — 老闆已喺紙上簽名批准，提交後自動批核",
+        });
+      }
+
       toast({
-        title: asSubmit
+        title: autoApproved
+          ? "已提交並自動批核 ✓ — 可以喺付款申請 Export 入 NetSuite"
+          : asSubmit
           ? (originalStatus === "rejected" ? "已重新提交" : "已提交")
           : (isEdit
               ? (originalStatus === "rejected" ? "已轉回草稿" : "已更新草稿")
@@ -1368,7 +1403,10 @@ export default function NewClaimPage() {
   const typeLabel = claimType === "expenses" ? "日常駛費 Claim"
     : claimType === "payment"
       ? (payeeType === "freelancer" ? "自由工作者付款申請 (Freelancer)" : "供應商付款申請 (Supplier)")
+        + (isPreApproved ? " · 已簽批" : "")
     : "交通費 Claim";
+  // 付款申請返回目標：已簽批 → 自己嘅面板
+  const paymentListPath = isPreApproved ? "/payments/preapproved" : "/payments";
   const pageTitle = isEdit
     ? (originalStatus === "rejected" ? `修改退回申請 · ${typeLabel}` : `修改草稿 · ${typeLabel}`)
     : `新建 ${typeLabel}`;
@@ -1385,7 +1423,7 @@ export default function NewClaimPage() {
         <Button variant="ghost" size="sm" onClick={() => setLocation(
           isEdit
             ? (claimType === "payment" ? `/payments/${editId}` : `/claims/${editId}`)
-            : (claimType === "payment" ? "/payments" : "/claims")
+            : (claimType === "payment" ? paymentListPath : "/claims")
         )} data-testid="button-back">
           <ArrowLeft size={16} className="mr-1" /> 返回
         </Button>
@@ -1394,6 +1432,17 @@ export default function NewClaimPage() {
           <h1 className="text-xl font-bold">{pageTitle}</h1>
         </div>
       </div>
+
+      {/* 已簽批付款 banner */}
+      {claimType === "payment" && isPreApproved && (
+        <div className="rounded border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm">
+          <div className="font-medium text-emerald-700 dark:text-emerald-400 mb-1">已簽批付款 — 老闆已喺紙上簽名批准</div>
+          <div className="text-emerald-700 dark:text-emerald-400">
+            請上載已簽名嘅發票／申請表做附件，跟平時付款申請一樣填資料。撳「提交」後唔經審批，直接變已批核，
+            Owner/Admin 可即時喺「付款申請 Export」入 NetSuite (Vendor Bills)。
+          </div>
+        </div>
+      )}
 
       {/* Reject reason banner (only when editing a rejected claim) */}
       {isEdit && originalStatus === "rejected" && rejectReason && (
@@ -2052,7 +2101,7 @@ export default function NewClaimPage() {
           <Save size={14} className="mr-1" /> {isEdit ? "更新草稿" : "儲存草稿"}
         </Button>
         <Button onClick={() => save(true)} disabled={saving} data-testid="button-submit">
-          <Send size={14} className="mr-1" /> 提交申請
+          <Send size={14} className="mr-1" /> {claimType === "payment" && isPreApproved ? "提交 (免審批・直接批核)" : "提交申請"}
         </Button>
       </div>
 

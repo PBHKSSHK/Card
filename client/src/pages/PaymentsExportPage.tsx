@@ -29,6 +29,7 @@ interface PaymentBatch {
   invoice_amount: number | null;
   invoice_currency: string | null;
   is_prepayment: boolean;
+  is_pre_approved?: boolean;
   period_month: string | null;
   charge_to_code: string;
   entity_code: string | null;
@@ -246,6 +247,9 @@ export default function PaymentsExportPage() {
                   <Checkbox checked={selectedIds.has(b.id)} onCheckedChange={(v) => toggleSelect(b.id, !!v)} />
                   <span className="font-mono">{b.batch_no}</span>
                   <span className="font-medium">{b.payee_name}</span>
+                  {b.is_pre_approved && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 font-medium">已簽批</span>
+                  )}
                   {b.supplier_invoice_no && <span className="text-muted-foreground">INV: {b.supplier_invoice_no}</span>}
                   <span className="text-muted-foreground">{b.entity_code} · {b.charge_to_code}</span>
                   <span className="ml-auto tabular-nums font-medium">

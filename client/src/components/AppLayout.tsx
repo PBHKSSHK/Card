@@ -4,7 +4,7 @@ import { useAuth } from "@/lib/auth";
 import {
   LayoutDashboard, Upload, GitCompareArrows, AlertTriangle, Package,
   FileDown, BarChart3, Settings, Sun, Moon, CreditCard, Menu, LogOut, User, Landmark,
-  Receipt, Inbox, HandCoins,
+  Receipt, Inbox, HandCoins, ShieldCheck,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
@@ -34,6 +34,7 @@ const claimNavItems = [
 const paymentNavItems = [
   { href: "/payments/inbox", label: "審批 Inbox", icon: Inbox, superOnly: false },
   { href: "/payments", label: "付款申請", icon: HandCoins, superOnly: false },
+  { href: "/payments/preapproved", label: "已簽批付款", icon: ShieldCheck, superOnly: false },
   { href: "/payments/export", label: "付款申請 Export", icon: FileDown, superOnly: true },
 ];
 
@@ -64,10 +65,16 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   // / payment_freelancer / payment) 屬於「付款申請」面板，唔算 Claim Forms。
   const isNavActive = (href: string) => {
     const isPaymentForm = location.startsWith("/claims/new/payment");
+    // 已簽批付款入口 (/claims/new/payment_supplier_pre / payment_freelancer_pre)
+    const isPreApprovedForm = isPaymentForm && location.endsWith("_pre");
+    if (href === "/payments/preapproved") {
+      return location.startsWith("/payments/preapproved") || isPreApprovedForm;
+    }
     if (href === "/payments") {
-      return location === "/payments" || isPaymentForm ||
+      return location === "/payments" || (isPaymentForm && !isPreApprovedForm) ||
         (location.startsWith("/payments/") &&
-          !location.startsWith("/payments/inbox") && !location.startsWith("/payments/export"));
+          !location.startsWith("/payments/inbox") && !location.startsWith("/payments/export") &&
+          !location.startsWith("/payments/preapproved"));
     }
     if (href === "/claims") {
       return !isPaymentForm && location.startsWith("/claims") &&
