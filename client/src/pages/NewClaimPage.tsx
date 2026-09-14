@@ -2,7 +2,7 @@
 // 新建 Claim form
 // URL: /claims/new/expenses 或 /claims/new/transportation
 // 用 useRoute 取出 claim_type
-import { useState, useMemo, useEffect, useRef } from "react";
+import { useState, useMemo, useEffect, useRef, useId } from "react";
 import { useRoute, useLocation } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
@@ -121,6 +121,42 @@ interface LineForm {
   // transport
   means_of_transport?: string;
   taxi_reason?: string;
+}
+
+// Project 揀選：可以由清單揀 (datalist)，亦可以直接打 NetSuite project ID —
+// 清單冇嘅新 project / 唔同 Charge To 嘅 project 都入到。入 NetSuite 時
+// mirror 搵唔到會用 SuiteQL 按 project ID 查，所以要打啱 NetSuite 個 ID。
+function ProjectInput({ value, onChange, options, allKnown, disabled, placeholder, className, testId }: {
+  value: string;
+  onChange: (v: string) => void;
+  options: any[];
+  allKnown: any[];
+  disabled?: boolean;
+  placeholder?: string;
+  className?: string;
+  testId?: string;
+}) {
+  const listId = useId();
+  const known = !value
+    || options.some((p: any) => p.project_id === value)
+    || allKnown.some((p: any) => p.project_id === value);
+  return (
+    <div>
+      <Input list={listId} value={value} disabled={disabled} placeholder={placeholder}
+        className={className} onChange={(e) => onChange(e.target.value.trim())}
+        autoComplete="off" data-testid={testId} />
+      <datalist id={listId}>
+        {options.map((p: any) => (
+          <option key={p.id || p.project_id} value={p.project_id}>{p.project_name}</option>
+        ))}
+      </datalist>
+      {!known && (
+        <div className="text-[10px] text-amber-600 dark:text-amber-500 mt-0.5">
+          自行輸入 — 入 NetSuite 時會用呢個 project ID
+        </div>
+      )}
+    </div>
+  );
 }
 
 function genKey() {
@@ -1748,10 +1784,15 @@ export default function NewClaimPage() {
                     }}
                     className="h-7 text-xs" /></td>
                   <td className="px-2 py-2">
-                    <Select
-                      value={l.project_code || "__none__"}
-                      onValueChange={(v) => {
-                        const project_code = v === "__none__" ? "" : v;
+                    <ProjectInput
+                      value={l.project_code || ""}
+                      options={projectsForChargeTo(l.line_charge_to || chargeToCode)}
+                      allKnown={projectCodes}
+                      disabled={!(l.line_charge_to || chargeToCode)}
+                      placeholder={(l.line_charge_to || chargeToCode) ? "揀或者打 project ID" : "先揀 Charge To"}
+                      className="h-7 text-xs min-w-[150px]"
+                      testId={`line-project-${l.item_no}`}
+                      onChange={(project_code) => {
                         const patch: Partial<LineForm> = { project_code };
                         // category 同新 project 狀態唔夾就自動處理:
                         // transport 轉返合適類別，expenses/payment 清走要重新揀
@@ -1763,26 +1804,7 @@ export default function NewClaimPage() {
                         }
                         updateLine(l._key, patch);
                       }}
-                      disabled={!(l.line_charge_to || chargeToCode)}
-                    >
-                      <SelectTrigger className="h-7 text-xs min-w-[140px]">
-                        <SelectValue placeholder={(l.line_charge_to || chargeToCode) ? "—" : "先揀 Charge To"} />
-                      </SelectTrigger>
-                      <SelectContent className="max-h-[400px]">
-                        <SelectItem value="__none__">—</SelectItem>
-                        {projectsForChargeTo(l.line_charge_to || chargeToCode).length === 0 && (l.line_charge_to || chargeToCode) && (
-                          <div className="px-2 py-1 text-[10px] text-muted-foreground">
-                            {entityForChargeTo(l.line_charge_to || chargeToCode)} 沒有可選 project
-                          </div>
-                        )}
-                        {projectsForChargeTo(l.line_charge_to || chargeToCode).map((p: any) => (
-                          <SelectItem key={p.id || p.project_id} value={p.project_id}>
-                            <span className="font-mono text-[10px] mr-1">{p.project_id}</span>
-                            <span className="text-muted-foreground">{p.project_name}</span>
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    />
                   </td>
                   {claimType === "transportation" && <>
                     <td className="px-2 py-2">
@@ -2134,23 +2156,19 @@ export default function NewClaimPage() {
             </div>
             <div>
               <Label className="text-xs">Project Code</Label>
-              <Select value={assignProj || "__none__"} onValueChange={(v) => {
-                const proj = v === "__none__" ? "" : v;
-                setAssignProj(proj);
-                const cat = expenseCategoriesRaw.find((c: any) => c.category_key === assignCat);
-                if (cat && !!proj !== isProjectCat(cat)) setAssignCat("");
-              }} disabled={!assignCt}>
-                <SelectTrigger data-testid="assign-project"><SelectValue placeholder={assignCt ? "—" : "先揀 Charge To"} /></SelectTrigger>
-                <SelectContent className="max-h-[360px]">
-                  <SelectItem value="__none__">—</SelectItem>
-                  {projectsForChargeTo(assignCt).map((p: any) => (
-                    <SelectItem key={p.id || p.project_id} value={p.project_id}>
-                      <span className="font-mono text-[10px] mr-1">{p.project_id}</span>
-                      <span className="text-muted-foreground">{p.project_name}</span>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <ProjectInput
+                value={assignProj || ""}
+                options={projectsForChargeTo(assignCt)}
+                allKnown={projectCodes}
+                disabled={!assignCt}
+                placeholder={assignCt ? "揀或者打 project ID" : "先揀 Charge To"}
+                testId="assign-project"
+                onChange={(proj) => {
+                  setAssignProj(proj);
+                  const cat = expenseCategoriesRaw.find((c: any) => c.category_key === assignCat);
+                  if (cat && !!proj !== isProjectCat(cat)) setAssignCat("");
+                }}
+              />
             </div>
             {claimType !== "transportation" && (
               <div>
@@ -2211,18 +2229,16 @@ export default function NewClaimPage() {
                 </div>
                 <div className="min-w-[150px]">
                   <Label className="text-[10px]">Project</Label>
-                  <Select value={p.project || "__none__"} onValueChange={(v) => updatePiece(i, { project: v === "__none__" ? "" : v })} disabled={!p.charge_to}>
-                    <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="—" /></SelectTrigger>
-                    <SelectContent className="max-h-[320px]">
-                      <SelectItem value="__none__">—</SelectItem>
-                      {projectsForChargeTo(p.charge_to).map((pr: any) => (
-                        <SelectItem key={pr.id || pr.project_id} value={pr.project_id}>
-                          <span className="font-mono text-[10px] mr-1">{pr.project_id}</span>
-                          <span className="text-muted-foreground">{pr.project_name}</span>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <ProjectInput
+                    value={p.project || ""}
+                    options={projectsForChargeTo(p.charge_to)}
+                    allKnown={projectCodes}
+                    disabled={!p.charge_to}
+                    placeholder={p.charge_to ? "揀或者打 project ID" : "先揀 Charge To"}
+                    className="h-8 text-xs"
+                    testId={`split-project-${i}`}
+                    onChange={(v) => updatePiece(i, { project: v })}
+                  />
                 </div>
                 {claimType !== "transportation" && (
                   <div className="min-w-[170px]">
