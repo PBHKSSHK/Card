@@ -132,18 +132,23 @@ Deno.serve(async (req) => {
     // ---- reference maps ----
     const [{ data: cats }, { data: coa }, { data: subs }, { data: depts }] = await Promise.all([
       svc.from('expense_categories').select('category_key,ns_account_number'),
-      svc.from('ns_chart_of_accounts').select('account_number,internal_id'),
+      svc.from('ns_chart_of_accounts').select('account_number,account_name,internal_id'),
       svc.from('ns_subsidiaries').select('internal_id,name,full_name,short_code'),
-      svc.from('ns_departments').select('charge_to,internal_id'),
+      svc.from('ns_departments').select('charge_to,name,internal_id'),
     ]);
     const catAcct = new Map((cats || []).map((c: any) => [String(c.category_key), String(c.ns_account_number || '')]));
     const acctId = new Map((coa || []).filter((a: any) => a.internal_id != null).map((a: any) => [String(a.account_number), a.internal_id]));
+    const acctName = new Map((coa || []).map((a: any) => [String(a.account_number), String(a.account_name || '')]));
+    const acctLabel = (num: string) => `${num} ${acctName.get(num) || ''}`.trim();
     const subId = new Map<string, number>();
     for (const s of subs || []) {
       for (const k of [s.full_name, s.name, s.short_code]) if (k) subId.set(String(k), s.internal_id);
     }
     const deptByChargeTo = new Map<string, number>();
     for (const d of depts || []) if (d.charge_to && d.internal_id != null) deptByChargeTo.set(String(d.charge_to), d.internal_id);
+    const deptName = new Map<string, string>();
+    for (const d of depts || []) if (d.charge_to) deptName.set(String(d.charge_to), String(d.name || d.charge_to));
+    const deptLabel = (ct: string) => ct ? `${ct}${deptName.get(ct) && deptName.get(ct) !== ct ? ' ' + deptName.get(ct) : ''}` : '';
 
     // project (job) ids from mirror + SuiteQL fallback
     const projectIds = [...new Set((allLines || []).map((l: any) => (l.project_code || '').trim()).filter(Boolean))];
@@ -239,7 +244,9 @@ Deno.serve(async (req) => {
 
       const items: any[] = [];
       // 預付款：行日期 ≠ 發票日期嘅行另出 JE，同日期合成一張
-      const jeGroups = new Map<string, { date: string; kind: 'accrual' | 'prepaid'; items: any[]; total: number }>();
+      const jeGroups = new Map<string, { date: string; kind: 'accrual' | 'prepaid'; items: any[]; total: number; preview: any[] }>();
+      // preview (dry_run 用)：入 NetSuite 前俾用戶睇分錄 — 日期 / 科目 / 借 / 貸 / 部門 / project
+      const billPreview: any[] = [];
       let total = 0;
       for (const l of lines) {
         const amt = Math.round(Number(l.hkd_amount || 0) * 100) / 100;
@@ -276,15 +283,24 @@ Deno.serve(async (req) => {
         if (kind === 'expense' && jid) billItem.customer = { id: jid };  // bill expense line books project 經 customer(job) field
         total += amt;
         items.push(billItem);
+        const billAcctNum = kind === 'expense' ? acctNum : kind === 'accrual' ? ACCRUED_ACCT : PREPAID_ACCT;
+        billPreview.push({
+          doc: 'BILL', date: billDate, kind, account: acctLabel(billAcctNum), debit: amt, credit: null,
+          department: deptLabel(chargeTo), project: kind === 'expense' ? cp : '', memo: billItem.memo || '',
+        });
 
         if (kind !== 'expense') {
           let g = jeGroups.get(lineDate);
-          if (!g) { g = { date: lineDate, kind, items: [], total: 0 }; jeGroups.set(lineDate, g); }
+          if (!g) { g = { date: lineDate, kind, items: [], total: 0, preview: [] }; jeGroups.set(lineDate, g); }
           const dr: any = { account: { id: String(aid) }, debit: amt, memo };
           if (did != null) dr.department = { id: String(did) };
           if (jid) dr.entity = { id: jid };  // JE 行 project 經 entity (job)
           g.items.push(dr);
           g.total += amt;
+          g.preview.push({
+            doc: 'JE', date: lineDate, kind, account: acctLabel(acctNum), debit: amt, credit: null,
+            department: deptLabel(chargeTo), project: cp, memo: memo || '',
+          });
         }
       }
       if (items.length === 0 && problems.length === 0) problems.push('冇有效明細行');
@@ -315,8 +331,14 @@ Deno.serve(async (req) => {
           memo: `${g.kind === 'accrual' ? 'Accrued expenses' : 'Prepaid amortisation'} ${batch.batch_no} - ${batch.payee_name || ''}`.slice(0, 4000),
         };
         if (batchDeptId != null) cr.department = { id: String(batchDeptId) };
+        const crPreview = {
+          doc: 'JE', date: g.date, kind: g.kind, account: acctLabel(g.kind === 'accrual' ? ACCRUED_ACCT : PREPAID_ACCT),
+          debit: null, credit: Math.round(g.total * 100) / 100,
+          department: deptLabel(String(batch.charge_to_code || '')), project: '', memo: cr.memo,
+        };
         return {
           date: g.date, kind: g.kind, total: Math.round(g.total * 100) / 100,
+          preview: [...g.preview, crPreview],
           payload: {
             externalId: `PAYJE-${String(batch.batch_no).replace(/[^A-Za-z0-9-]+/g, '')}-${g.date.replace(/-/g, '')}`,
             subsidiary: { id: String(sid) },
@@ -333,7 +355,15 @@ Deno.serve(async (req) => {
         results.push({
           batch_id: batch.id, batch_no: batch.batch_no, label, vendor: vendor!.label, status: 'dry_run',
           bill_date: billDate, lines: items.length, total: Math.round(total * 100) / 100,
+          invoice_no: batch.supplier_invoice_no || null, due_date: batch.payment_due_date || null, is_prepayment: !!batch.is_prepayment,
           journals: journals.map((j) => ({ date: j.date, kind: j.kind, total: j.total, lines: j.payload.line.items.length })),
+          // 完整分錄 preview：bill 行 + AP 貸方 + 每張 JE
+          preview: [
+            ...billPreview,
+            { doc: 'BILL', date: billDate, kind: 'ap', account: acctLabel('33000010'), debit: null, credit: Math.round(total * 100) / 100,
+              department: '', project: '', memo: `Accounts Payable - ${vendor!.label}` },
+            ...journals.flatMap((j) => j.preview),
+          ],
         });
         continue;
       }

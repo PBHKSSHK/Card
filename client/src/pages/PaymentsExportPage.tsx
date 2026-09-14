@@ -15,7 +15,8 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { csvText, csvAmount } from "@/lib/csv";
 import { todayHK } from "@/lib/hkdate";
-import { HandCoins, Loader2, UploadCloud, Download } from "lucide-react";
+import { HandCoins, Loader2, UploadCloud, Download, Eye } from "lucide-react";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { usePagination, PaginationFooter } from "@/components/PaginationFooter";
 
 interface PaymentBatch {
@@ -42,15 +43,37 @@ interface PaymentBatch {
   created_at: string;
 }
 
+type PreviewRow = {
+  doc: "BILL" | "JE";
+  date: string;
+  kind: string;
+  account: string;
+  debit: number | null;
+  credit: number | null;
+  department: string;
+  project: string;
+  memo: string;
+};
+
 type PostResult = {
+  batch_id?: string;
   batch_no: string | null;
   label?: string;
   vendor?: string;
   status: string;
   netsuite_id?: string;
   error?: string;
+  bill_date?: string;
+  invoice_no?: string | null;
+  due_date?: string | null;
+  is_prepayment?: boolean;
+  total?: number;
   journals?: { date: string; kind: string; total: number; status: string; netsuite_id?: string; error?: string }[];
+  preview?: PreviewRow[];
 };
+
+const fmtAmt = (n: number | null | undefined) =>
+  n == null ? "" : n.toLocaleString("en-HK", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 export default function PaymentsExportPage() {
   const { toast } = useToast();
@@ -59,6 +82,10 @@ export default function PaymentsExportPage() {
   const [posting, setPosting] = useState(false);
   const [postResults, setPostResults] = useState<PostResult[]>([]);
   const [billsSub, setBillsSub] = useState<string>("all");
+  // 入 NetSuite 前 preview (dry_run)：睇清楚 bill + JE 分錄先確認
+  const [previewing, setPreviewing] = useState(false);
+  const [preview, setPreview] = useState<PostResult[] | null>(null);
+  const [previewIds, setPreviewIds] = useState<string[]>([]);
 
   const { data: payments } = useQuery({
     queryKey: ["payment-batches"],
@@ -105,13 +132,37 @@ export default function PaymentsExportPage() {
     });
   };
 
-  const handlePostBills = async () => {
+  // Step 1：dry_run 拎分錄 preview (唔會寫 NetSuite)
+  const handlePreview = async () => {
     const ids = readyBatches.filter(b => selectedIds.has(b.id)).map(b => b.id);
     if (ids.length === 0) {
       toast({ title: "未揀批次", description: "請先剔選要入數嘅批次", variant: "destructive" });
       return;
     }
-    if (!window.confirm(`確定將 ${ids.length} 張付款申請 post 去 NetSuite 做 vendor bill?\n\nVendor 用收款人名對應，供應商發票號碼做 Reference No。`)) return;
+    setPreviewing(true);
+    setPostResults([]);
+    try {
+      const { data, error } = await supabase.functions.invoke("netsuite-post-vendor-bill", {
+        body: { batch_ids: ids, dry_run: true },
+      });
+      if (error) throw new Error(error.message || "Edge Function 呼叫失敗");
+      if (data?.error) throw new Error(data.error);
+      setPreview(data.results || []);
+      setPreviewIds(ids);
+    } catch (err: any) {
+      toast({ title: "Preview 失敗", description: err.message, variant: "destructive" });
+    }
+    setPreviewing(false);
+  };
+
+  // Step 2：用戶喺 preview 確認先真正 post
+  const handlePostBills = async () => {
+    const ids = previewIds.filter(id => (preview || []).some(r => r.batch_id === id && r.status === "dry_run"));
+    if (ids.length === 0) {
+      toast({ title: "冇可入數嘅批次", description: "preview 入面全部有問題，請先修正", variant: "destructive" });
+      return;
+    }
+    setPreview(null);
     setPosting(true);
     setPostResults([]);
     try {
@@ -218,10 +269,10 @@ export default function PaymentsExportPage() {
                 {billsSubOptions.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
               </SelectContent>
             </Select>
-            <Button size="sm" onClick={handlePostBills} disabled={posting || selectedIds.size === 0}
-              data-testid="button-post-bills">
-              {posting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <UploadCloud className="h-4 w-4 mr-2" />}
-              Post {selectedIds.size > 0 ? `${selectedIds.size} 張` : ""} 去 NetSuite
+            <Button size="sm" onClick={handlePreview} disabled={posting || previewing || selectedIds.size === 0}
+              data-testid="button-preview-bills">
+              {previewing || posting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Eye className="h-4 w-4 mr-2" />}
+              Preview {selectedIds.size > 0 ? `${selectedIds.size} 張` : ""} 入數分錄
             </Button>
           </div>
         </CardHeader>
@@ -340,6 +391,86 @@ export default function PaymentsExportPage() {
           <PaginationFooter {...exportedPg.footerProps} />
         </CardContent>
       </Card>
+
+      {/* 入 NetSuite 前 preview — 每張單嘅 Bill + JE 分錄，確認先真正 post */}
+      <Dialog open={!!preview} onOpenChange={(o) => { if (!o) setPreview(null); }}>
+        <DialogContent className="max-w-5xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>入 NetSuite 前 Preview — 請核對分錄</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            {(preview || []).map((r) => (
+              <div key={r.batch_id || r.batch_no || ""} className="border border-border/60 rounded-md">
+                <div className="px-3 py-2 bg-muted/40 flex items-center gap-2 flex-wrap text-sm">
+                  <span className="font-mono font-medium">{r.batch_no}</span>
+                  <span className="font-medium">{r.vendor || r.label}</span>
+                  {r.is_prepayment && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-700 dark:text-purple-400 font-medium">預付</span>
+                  )}
+                  {r.status === "dry_run" && (
+                    <span className="text-xs text-muted-foreground">
+                      Bill 日期 {r.bill_date}{r.invoice_no ? ` · 發票 ${r.invoice_no}` : ""}{r.due_date ? ` · 到期 ${r.due_date}` : ""}
+                      {" · "}總額 HK${fmtAmt(r.total)}
+                      {r.journals && r.journals.length > 0 ? ` · ${r.journals.length} 張 JE` : ""}
+                    </span>
+                  )}
+                  {r.status === "error" && (
+                    <span className="text-xs text-red-600 dark:text-red-400">✗ 唔會入數：{r.error}</span>
+                  )}
+                </div>
+                {r.status === "dry_run" && r.preview && (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead className="text-muted-foreground border-b border-border/60">
+                        <tr>
+                          <th className="text-left px-3 py-1.5 font-medium whitespace-nowrap">Date</th>
+                          <th className="text-left px-2 py-1.5 font-medium">Doc</th>
+                          <th className="text-left px-2 py-1.5 font-medium">Account</th>
+                          <th className="text-right px-2 py-1.5 font-medium">Debit</th>
+                          <th className="text-right px-2 py-1.5 font-medium">Credit</th>
+                          <th className="text-left px-2 py-1.5 font-medium">Dept</th>
+                          <th className="text-left px-2 py-1.5 font-medium">Project</th>
+                          <th className="text-left px-3 py-1.5 font-medium">Memo</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {r.preview.map((row, i) => {
+                          const prev = i > 0 ? r.preview![i - 1] : null;
+                          const newGroup = !prev || prev.doc !== row.doc || prev.date !== row.date;
+                          return (
+                            <tr key={i} className={`${newGroup && i > 0 ? "border-t-2 border-border" : "border-t border-border/40"} ${row.doc === "JE" ? "bg-amber-500/5" : ""}`}>
+                              <td className="px-3 py-1 tabular-nums whitespace-nowrap">{row.date}</td>
+                              <td className="px-2 py-1">
+                                <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${row.doc === "BILL" ? "bg-blue-500/15 text-blue-700 dark:text-blue-400" : "bg-amber-500/15 text-amber-700 dark:text-amber-500"}`}>
+                                  {row.doc}{row.doc === "JE" ? ` · ${row.kind === "accrual" ? "accrual" : "prepaid"}` : ""}
+                                </span>
+                              </td>
+                              <td className="px-2 py-1 whitespace-nowrap">{row.account}</td>
+                              <td className="px-2 py-1 text-right tabular-nums">{fmtAmt(row.debit)}</td>
+                              <td className="px-2 py-1 text-right tabular-nums">{fmtAmt(row.credit)}</td>
+                              <td className="px-2 py-1 whitespace-nowrap text-muted-foreground">{row.department}</td>
+                              <td className="px-2 py-1 font-mono text-muted-foreground">{row.project}</td>
+                              <td className="px-3 py-1 text-muted-foreground max-w-[360px] truncate" title={row.memo}>{row.memo}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPreview(null)} disabled={posting}>取消</Button>
+            <Button onClick={handlePostBills} disabled={posting || !(preview || []).some(r => r.status === "dry_run")}
+              data-testid="button-confirm-post-bills">
+              {posting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <UploadCloud className="h-4 w-4 mr-2" />}
+              確認入 NetSuite ({(preview || []).filter(r => r.status === "dry_run").length} 張)
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
