@@ -219,6 +219,24 @@ Deno.serve(async (req) => {
         vendorProblems.set(name, `"${name}" 對到 ${fuzzy.length} 個 vendors: ${fuzzy.slice(0, 5).map((v: any) => v.companyname || v.entityid).join(' | ')} — 請用完整名`);
       }
     }
+    // OneWorld：bill 只可以開喺 vendor 所屬 subsidiary (primary + secondary)，
+    // 否則 NetSuite 400 "Invalid combination of entity and subsidiary" — preview 先擋住
+    const vendorSubs = new Map<string, Set<number>>();
+    const vendorIds = [...new Set([...vendorByName.values()].map((v) => v.id))];
+    if (vendorIds.length > 0) {
+      const inIds = vendorIds.join(',');
+      for (const r of await suiteql(`SELECT id, subsidiary FROM vendor WHERE id IN (${inIds})`)) {
+        if (r.subsidiary == null) continue;
+        if (!vendorSubs.has(String(r.id))) vendorSubs.set(String(r.id), new Set());
+        vendorSubs.get(String(r.id))!.add(Number(r.subsidiary));
+      }
+      for (const r of await suiteql(`SELECT entity, subsidiary FROM vendorSubsidiaryRelationship WHERE entity IN (${inIds})`)) {
+        if (!vendorSubs.has(String(r.entity))) vendorSubs.set(String(r.entity), new Set());
+        vendorSubs.get(String(r.entity))!.add(Number(r.subsidiary));
+      }
+    }
+    const subShort = new Map<number, string>();
+    for (const s of subs || []) subShort.set(Number(s.internal_id), String(s.short_code || s.name || s.internal_id));
 
     // ---- build + post per batch ----
     const ACCRUED_ACCT = '37001010';   // Accrued Expenses - General
@@ -276,6 +294,15 @@ Deno.serve(async (req) => {
 
       const sid = subId.get(String(batch.entity_code || '')) ?? subId.get(String(batch.subsidiary_full_name || ''));
       if (sid == null) problems.push(`subsidiary not mapped: ${batch.entity_code || batch.subsidiary_full_name || '?'}`);
+      if (vendor && sid != null) {
+        const allowed = vendorSubs.get(vendor.id);
+        if (allowed && allowed.size > 0 && !allowed.has(Number(sid))) {
+          const names = [...allowed].map((i) => subShort.get(i) || String(i)).join(' / ');
+          const want = batch.entity_code || subShort.get(Number(sid)) || String(sid);
+          problems.push(`vendor ${vendor.label} 喺 NetSuite 只屬於 subsidiary ${names}，張單係 ${want} — `
+            + `請 NetSuite Administrator 開 vendor record → Subsidiaries 加 ${want}（Multi-Subsidiary Vendor），或者改單嘅 Charge To`);
+        }
+      }
 
       // 發票日期 = bill date；冇先用批核日/提交日
       const billDate = String(batch.invoice_date || toHKDate(batch.approved_at) || batch.submit_date || today).slice(0, 10);

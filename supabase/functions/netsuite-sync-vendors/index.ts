@@ -94,11 +94,20 @@ Deno.serve(async (req) => {
     let lastId = -1;
     let fetched = 0, pages = 0;
     const allRecords: any[] = [];
+    // vendor ↔ subsidiary (OneWorld)：primary 喺 vendor.subsidiary，secondary 喺
+    // vendorSubsidiaryRelationship。bill 只可以開喺呢啲 subsidiary，mirror 落去等
+    // 付款申請表格即刻警告 / Export preview 擋住
+    const vendorSubs = new Map<number, Set<number>>();
+    const addSub = (vid: number, sid: number) => {
+      if (!Number.isFinite(vid) || !Number.isFinite(sid)) return;
+      if (!vendorSubs.has(vid)) vendorSubs.set(vid, new Set());
+      vendorSubs.get(vid)!.add(sid);
+    };
     for (;;) {
       pages++;
       if (pages > 30) break; // ~30k vendors hard stop
       const rows = await suiteql(`
-        SELECT id, entityid, companyname, isperson, firstname, lastname
+        SELECT id, entityid, companyname, isperson, firstname, lastname, subsidiary
         FROM vendor
         WHERE isinactive = 'F' AND id > ${lastId}
         ORDER BY id`);
@@ -107,6 +116,7 @@ Deno.serve(async (req) => {
       lastId = Number(rows[rows.length - 1].id);
 
       for (const r of rows) {
+        if (r.subsidiary != null) addSub(Number(r.id), Number(r.subsidiary));
         const personName = [r.firstname, r.lastname].filter(Boolean).join(' ').trim();
         allRecords.push({
           internal_id: Number(r.id),
@@ -119,6 +129,32 @@ Deno.serve(async (req) => {
         });
       }
       if (rows.length < 1000) break;
+    }
+
+    // secondary subsidiaries (multi-subsidiary vendor)。keyset by entity；一頁滿 1000 時
+    // 最後一個 vendor 嘅 rows 可能被切開 → 唔計佢，下頁由佢重新拎
+    let lastEnt = -1;
+    for (let p = 0; p < 60; p++) {
+      const rel = await suiteql(`
+        SELECT entity, subsidiary FROM vendorSubsidiaryRelationship
+        WHERE entity > ${lastEnt} ORDER BY entity`);
+      if (rel.length === 0) break;
+      const full = rel.length >= 1000;
+      const tailEntity = Number(rel[rel.length - 1].entity);
+      for (const r of rel) {
+        if (full && Number(r.entity) === tailEntity) continue;
+        addSub(Number(r.entity), Number(r.subsidiary));
+      }
+      if (!full) break;
+      lastEnt = tailEntity - 1;
+    }
+    const { data: subRows } = await svc.from('ns_subsidiaries').select('internal_id, short_code');
+    const subCode = new Map<number, string>();
+    for (const s of subRows || []) if (s.short_code) subCode.set(Number(s.internal_id), String(s.short_code));
+    for (const rec of allRecords) {
+      const ids = [...(vendorSubs.get(rec.internal_id) || [])].sort((a, b) => a - b);
+      rec.subsidiary_ids = ids;
+      rec.subsidiary_codes = ids.map((i) => subCode.get(i) || String(i));
     }
 
     // 最後銀行交易日期 per vendor (vendor payment / cheque) —

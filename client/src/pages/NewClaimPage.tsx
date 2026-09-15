@@ -621,7 +621,7 @@ export default function NewClaimPage() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("ns_vendor_directory")
-        .select("internal_id, entityid, company_name, is_person, last_payment_date")
+        .select("internal_id, entityid, company_name, is_person, last_payment_date, subsidiary_codes")
         .eq("is_inactive", false)
         .eq("is_person", payeeType === "freelancer")
         .order("company_name");
@@ -649,6 +649,10 @@ export default function NewClaimPage() {
       (v.entityid || "").trim().toLowerCase() === q) || null;
   }, [nsVendors, payeeName]);
   const payeeInNs = !!matchedVendor;
+  // OneWorld：vendor 只可以喺所屬 subsidiary 開 bill (mirror 咗 subsidiary_codes)，唔夾即刻警告
+  const batchEntity = entityForChargeTo(chargeToCode) || "";
+  const vendorSubCodes: string[] = ((matchedVendor as any)?.subsidiary_codes as string[] | undefined) || [];
+  const payeeSubMismatch = claimType === "payment" && !!batchEntity && vendorSubCodes.length > 0 && !vendorSubCodes.includes(batchEntity);
 
   // IR56M 規則：freelancer 付款，NetSuite 未有呢個人，或者有但超過兩年
   // 冇銀行交易 (last_payment_date) — 一律要重新提交個人資料。
@@ -1699,6 +1703,12 @@ export default function NewClaimPage() {
                   新收款人 — NetSuite 未有，批核後入 Bills 前要先喺 NetSuite 開 vendor
                 </div>
               ))}
+              {payeeSubMismatch && (
+                <div className="text-[10px] text-red-600 dark:text-red-400 mt-0.5">
+                  ⚠ 呢個收款人喺 NetSuite 只屬於 subsidiary {vendorSubCodes.join(" / ")}，張單 Charge To 係 {batchEntity} — 入 NetSuite 會失敗。
+                  請 NetSuite Admin 喺 vendor record → Subsidiaries 加 {batchEntity}（Multi-Subsidiary Vendor），或者改 Charge To。
+                </div>
+              )}
             </div>
             <div>
               <Label className="text-xs">
