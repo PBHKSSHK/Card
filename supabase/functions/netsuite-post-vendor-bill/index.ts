@@ -223,6 +223,10 @@ Deno.serve(async (req) => {
     // ---- build + post per batch ----
     const ACCRUED_ACCT = '37001010';   // Accrued Expenses - General
     const PREPAID_ACCT = '22005010';   // Prepaid Expenses
+    // legacy tax：bill 每行都要 tax code。費用科目 NetSuite 會 default VAT_HK:UNDEF-HK，
+    // 但 37001010 / 22005010 (balance sheet) 冇 default → 400 "Please enter value(s) for: Tax Code"
+    // → 一律明確俾 VAT_HK:UNDEF-HK (0%，internal id 5，同 bill 68892 嘅費用行一樣)
+    const TAX_CODE_ID = '5';
     const today = new Date().toISOString().slice(0, 10);
     const postRecord = async (type: 'vendorBill' | 'journalEntry', payload: any): Promise<{ ok: boolean; id?: string; duplicate?: boolean; error?: string }> => {
       const url = `https://${host}.suitetalk.api.netsuite.com/services/rest/record/v1/${type}`;
@@ -319,6 +323,7 @@ Deno.serve(async (req) => {
         const billItem: any = {
           account: { id: String(kind === 'expense' ? aid : kind === 'accrual' ? accruedId : prepaidId) },
           amount: amt,
+          taxCode: { id: TAX_CODE_ID },
           memo: kind === 'expense' ? memo
             : `${kind === 'accrual' ? 'Accrued' : 'Prepaid'} ${lineDate} - ${memo || ''}`.trim().slice(0, 4000),
         };
@@ -435,25 +440,31 @@ Deno.serve(async (req) => {
       const jeIds = jeResults.filter((r) => r.netsuite_id).map((r) => r.netsuite_id);
       const jeNote = (jeIds.length ? `; JE ${jeIds.join(', ')}` : '') + (jeFailed ? `; ${jeFailed} JE 失敗` : '');
 
+      // CardRecon 狀態更新 — 失敗一定要報出嚟 (bill 已經喺 NetSuite，唔可以靜靜地留喺 approved)
+      let dbProblem = '';
       if (billStatus === 'created') {
         created++;
-        await svc.from('claim_batches').update({
+        const upd = await svc.from('claim_batches').update({
           status: 'exported',
           netsuite_journal_no: `BILL ${bill.id}`,
           exported_at: new Date().toISOString(),
           exported_by_user_id: claims.sub || null,
-        }).eq('id', batch.id).in('status', ['approved', 'exported']);
-        await svc.from('claim_audit_log').insert({
+        }).eq('id', batch.id).in('status', ['approved', 'exported']).select('id');
+        if (upd.error) dbProblem = `CardRecon 狀態更新失敗 (bill ${bill.id} 已喺 NetSuite): ${upd.error.message}`;
+        else if (!upd.data?.length) dbProblem = `CardRecon 狀態更新失敗 (bill ${bill.id} 已喺 NetSuite): 批次狀態已變`;
+        const aud = await svc.from('claim_audit_log').insert({
           batch_id: batch.id, action: 'exported', from_status: batch.status, to_status: 'exported',
           actor_user_id: claims.sub || null, comment: `NetSuite vendor bill ${bill.id} (${vendor!.label})${jeNote}`,
         });
+        if (aud.error && !dbProblem) dbProblem = `audit log 寫入失敗: ${aud.error.message}`;
       } else {
         duplicates++;
-        await svc.from('claim_batches').update({
+        const upd = await svc.from('claim_batches').update({
           status: 'exported',
           exported_at: new Date().toISOString(),
           exported_by_user_id: claims.sub || null,
         }).eq('id', batch.id).eq('status', 'approved');
+        if (upd.error) dbProblem = `CardRecon 狀態更新失敗: ${upd.error.message}`;
         if (jeIds.length) {
           await svc.from('claim_audit_log').insert({
             batch_id: batch.id, action: 'exported', from_status: 'exported', to_status: 'exported',
@@ -461,15 +472,17 @@ Deno.serve(async (req) => {
           });
         }
       }
-      if (jeFailed > 0) failed++;
+      if (jeFailed > 0 || dbProblem) failed++;
+      const errParts: string[] = [];
+      if (jeFailed > 0) errParts.push(`${jeFailed} 張 JE 入唔到: ` + jeResults.filter((r) => r.status === 'error').map((r) => `${r.date} ${r.error}`).join(' | '));
+      if (dbProblem) errParts.push(dbProblem);
+      if (!errParts.length && billStatus === 'duplicate') errParts.push('externalId already posted (bill 已存在 NetSuite)');
       results.push({
         batch_id: batch.id, batch_no: batch.batch_no, label, vendor: vendor!.label,
-        status: jeFailed > 0 ? 'partial' : billStatus,
+        status: jeFailed > 0 || dbProblem ? 'partial' : billStatus,
         netsuite_id: bill.id, bill_date: billDate, lines: items.length, total: Math.round(total * 100) / 100,
         journals: jeResults,
-        error: jeFailed > 0
-          ? `${jeFailed} 張 JE 入唔到: ` + jeResults.filter((r) => r.status === 'error').map((r) => `${r.date} ${r.error}`).join(' | ')
-          : (billStatus === 'duplicate' ? 'externalId already posted (bill 已存在 NetSuite)' : undefined),
+        error: errParts.length ? errParts.join(' | ') : undefined,
       });
     }
 
