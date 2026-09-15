@@ -68,6 +68,7 @@ type PostResult = {
   due_date?: string | null;
   is_prepayment?: boolean;
   total?: number;
+  header_memo?: string;
   journals?: { date: string; kind: string; total: number; status: string; netsuite_id?: string; error?: string }[];
   preview?: PreviewRow[];
 };
@@ -426,6 +427,9 @@ export default function PaymentsExportPage() {
                       {" · "}總額 HK${fmtAmt(r.total)}
                       {r.journals && r.journals.length > 0 ? ` · ${r.journals.length} 張 JE` : ""}
                     </span>
+                  )}
+                  {r.status === "dry_run" && r.header_memo && (
+                    <div className="w-full text-xs text-muted-foreground">Bill Memo：{r.header_memo}</div>
                   )}
                   {r.status === "error" && (
                     <span className="text-xs text-red-600 dark:text-red-400">✗ 唔會入數：{r.error}</span>

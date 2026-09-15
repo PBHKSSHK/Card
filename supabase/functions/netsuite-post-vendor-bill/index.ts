@@ -282,6 +282,7 @@ Deno.serve(async (req) => {
       const jeGroups = new Map<string, { date: string; kind: 'accrual' | 'prepaid'; items: any[]; total: number; preview: any[] }>();
       // preview (dry_run 用)：入 NetSuite 前俾用戶睇分錄 — 日期 / 科目 / 借 / 貸 / 部門 / project
       const billPreview: any[] = [];
+      const rawMemos: string[] = [];   // 表頭 memo 跟明細行 description
       let total = 0;
       for (const l of lines) {
         const amt = Math.round(Number(l.hkd_amount || 0) * 100) / 100;
@@ -292,6 +293,7 @@ Deno.serve(async (req) => {
         const aid = acctId.get(acctNum);
         if (aid == null) { problems.push(`account ${acctNum} 冇 internal id (行 #${l.item_no})`); continue; }
         const memo = [l.description, l.client_name ? `(${l.client_name})` : ''].filter(Boolean).join(' ').slice(0, 4000) || undefined;
+        if (memo && !rawMemos.includes(memo)) rawMemos.push(memo);
         // 一張發票拆多個 department：行有自己嘅 charge to 就用行嘅，否則跟表頭
         const chargeTo = (l.line_charge_to || batch.charge_to_code || '').trim();
         const did = chargeTo ? deptByChargeTo.get(chargeTo) : undefined;
@@ -346,13 +348,17 @@ Deno.serve(async (req) => {
         continue;
       }
 
+      // bill 表頭 memo 跟返明細行 description (多行用 | 連接)；冇 description 先用 batch 資料
+      const headerMemo = (rawMemos.length
+        ? rawMemos.join(' | ')
+        : `CardRecon payment requisition ${batch.batch_no} - req by ${batch.full_name || '?'}`).slice(0, 4000);
       const payload: any = {
         externalId: batch.batch_no,
         entity: { id: vendor!.id },
         subsidiary: { id: String(sid) },
         currency: { id: '1' },
         tranDate: billDate,
-        memo: `CardRecon payment requisition ${batch.batch_no} - req by ${batch.full_name || '?'}`.slice(0, 4000),
+        memo: headerMemo,
         expense: { items },
       };
       if (batch.supplier_invoice_no) payload.tranId = String(batch.supplier_invoice_no).slice(0, 45);
@@ -389,7 +395,7 @@ Deno.serve(async (req) => {
       if (dryRun) {
         results.push({
           batch_id: batch.id, batch_no: batch.batch_no, label, vendor: vendor!.label, status: 'dry_run',
-          bill_date: billDate, lines: items.length, total: Math.round(total * 100) / 100,
+          bill_date: billDate, lines: items.length, total: Math.round(total * 100) / 100, header_memo: headerMemo,
           invoice_no: batch.supplier_invoice_no || null, due_date: batch.payment_due_date || null, is_prepayment: !!batch.is_prepayment,
           journals: journals.map((j) => ({ date: j.date, kind: j.kind, total: j.total, lines: j.payload.line.items.length })),
           // 完整分錄 preview：bill 行 + AP 貸方 + 每張 JE
