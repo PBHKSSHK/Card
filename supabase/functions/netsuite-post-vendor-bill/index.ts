@@ -112,12 +112,13 @@ Deno.serve(async (req) => {
       if (!res.ok) throw new Error(`SuiteQL ${res.status}: ${(await res.text()).slice(0, 300)}`);
       return (await res.json()).items || [];
     };
-    // REST record GET — 用嚟做權限 probe (GET <type>/0：有權限會 404，冇權限會 403)
-    const nsGet = async (path: string): Promise<{ ok: boolean; status: number; text: string }> => {
-      const url = `https://${host}.suitetalk.api.netsuite.com/services/rest/record/v1/${path}`;
-      const header = await authHeader('GET', url, cfg as Record<string, string>);
-      const res = await fetch(url, { method: 'GET', headers: { Authorization: header, 'Content-Type': 'application/json' } });
-      return { ok: res.ok, status: res.status, text: res.ok ? '' : (await res.text()).slice(0, 800) };
+    // 權限 probe：POST 空 payload — 403 = role 冇 Create 權限 (view 都唔夠)；
+    // 400 validation error = 有權限 (空 payload 一定建唔到 record，所以安全)
+    const nsProbe = async (type: 'vendorBill' | 'journalEntry'): Promise<{ status: number; text: string }> => {
+      const url = `https://${host}.suitetalk.api.netsuite.com/services/rest/record/v1/${type}`;
+      const header = await authHeader('POST', url, cfg as Record<string, string>);
+      const res = await fetch(url, { method: 'POST', headers: { Authorization: header, 'Content-Type': 'application/json', Prefer: 'transient' }, body: '{}' });
+      return { status: res.status, text: res.ok ? '' : (await res.text()).slice(0, 800) };
     };
     // NetSuite 403 INSUFFICIENT_PERMISSION → 講清楚 admin 要加咩權限
     const friendlyNsError = (status: number, text: string): string => {
@@ -236,11 +237,11 @@ Deno.serve(async (req) => {
     // dry_run：預先 probe Bills / JE 權限，preview 即刻話你知入數會唔會 403
     const warnings: string[] = [];
     if (dryRun && (batches || []).length > 0) {
-      const probe = await nsGet('vendorBill/0');
-      if (!probe.ok && probe.status !== 404) warnings.push(`Vendor Bill — ${friendlyNsError(probe.status, probe.text)}`);
+      const probe = await nsProbe('vendorBill');
+      if (probe.status === 403) warnings.push(`Vendor Bill — ${friendlyNsError(probe.status, probe.text)}`);
       if ((batches || []).some((b: any) => b.is_prepayment)) {
-        const p2 = await nsGet('journalEntry/0');
-        if (!p2.ok && p2.status !== 404) warnings.push(`Journal Entry (預付款) — ${friendlyNsError(p2.status, p2.text)}`);
+        const p2 = await nsProbe('journalEntry');
+        if (p2.status === 403) warnings.push(`Journal Entry (預付款) — ${friendlyNsError(p2.status, p2.text)}`);
       }
     }
 
