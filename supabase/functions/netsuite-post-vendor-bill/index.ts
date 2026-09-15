@@ -59,6 +59,11 @@ function b64urlJson(seg: string): any {
 function sqlq(s: string): string {
   return s.replace(/'/g, "''");
 }
+// 發票 OCR 會將明細 description 寫成 "[Vendor] Summary"；bill 本身已經有 vendor，
+// memo 唔要開頭嘅 [Vendor] tag
+function stripVendorTag(s: string): string {
+  return s.replace(/^\s*\[[^\]]{1,120}\]\s*[-–:]?\s*/, '');
+}
 // timestamptz → HK-local YYYY-MM-DD
 function toHKDate(ts: string | null): string | null {
   if (!ts) return null;
@@ -292,7 +297,8 @@ Deno.serve(async (req) => {
         if (!acctNum) { problems.push(`行 #${l.item_no} 冇 expense category`); continue; }
         const aid = acctId.get(acctNum);
         if (aid == null) { problems.push(`account ${acctNum} 冇 internal id (行 #${l.item_no})`); continue; }
-        const memo = [l.description, l.client_name ? `(${l.client_name})` : ''].filter(Boolean).join(' ').slice(0, 4000) || undefined;
+        const memo = [l.description ? stripVendorTag(String(l.description)) : '', l.client_name ? `(${l.client_name})` : '']
+          .filter(Boolean).join(' ').trim().slice(0, 4000) || undefined;
         if (memo && !rawMemos.includes(memo)) rawMemos.push(memo);
         // 一張發票拆多個 department：行有自己嘅 charge to 就用行嘅，否則跟表頭
         const chargeTo = (l.line_charge_to || batch.charge_to_code || '').trim();

@@ -39,6 +39,12 @@ const PAYMENT_TERMS = [
 // 付款條款 → 付款到期日。基準日 = 發票日期 (冇就用 Submit Date)。
 // 即時付款 = 基準日；Net N = 基準日 + N 日；月結 = 基準日下個月月底；其他 = 唔自動計。
 const TERMS_NET_DAYS: Record<string, number> = { due_on_receipt: 0, net7: 7, net14: 14, net30: 30, net60: 60 };
+// 發票 OCR 會將 description 寫成 "[Vendor] Summary"（credit card recon 用）；
+// 付款申請已經有收款人，明細 description 唔要開頭嘅 [Vendor] tag
+function stripVendorTag(s: string): string {
+  return s.replace(/^\s*\[[^\]]{1,120}\]\s*[-–:]?\s*/, "");
+}
+
 function dueDateFromTerms(terms: string, baseIso: string): string | null {
   if (!terms || !baseIso) return null;
   const d = new Date(baseIso + "T00:00:00");
@@ -894,7 +900,7 @@ export default function NewClaimPage() {
           const patch: Partial<LineForm> = cur === "HKD"
             ? { hkd_amount: String(inv.amount), currency: "HKD", fx_rate: "1", original_amount: String(inv.amount) }
             : { currency: cur, original_amount: String(inv.amount), fx_rate: "", hkd_amount: "" };
-          return [{ ...prev[0], ...patch, description: prev[0].description || inv.description || "" }];
+          return [{ ...prev[0], ...patch, description: prev[0].description || stripVendorTag(inv.description || "") }];
         }
         return prev;
       });
