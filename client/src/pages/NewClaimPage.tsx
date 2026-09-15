@@ -80,6 +80,9 @@ const CURRENCIES = ["HKD", "USD", "CNY", "JPY", "EUR", "GBP", "TWD", "SGD", "THB
 
 // ns_departments.entity_code → ns_project_codes.charge_to prefix
 // 704 只見 704 嘅 projects；SSHK 見 SS / SS-JM / SS-JS / SS-Prod；PBHK 見 PB-* etc.
+// NetSuite subsidiary short codes (ns_subsidiaries)。Charge To entity "JS" 唔係 subsidiary，
+// vendor subsidiary 警告只對呢啲 code 做
+const SUBSIDIARY_CODES = new Set(["PBHK", "SSHK", "CLS", "JM", "704", "GoAsia"]);
 const ENTITY_TO_PROJECT_PREFIXES: Record<string, string[]> = {
   "704": ["704"],
   "CLS": ["CLS"],
@@ -652,7 +655,8 @@ export default function NewClaimPage() {
   // OneWorld：vendor 只可以喺所屬 subsidiary 開 bill (mirror 咗 subsidiary_codes)，唔夾即刻警告
   const batchEntity = entityForChargeTo(chargeToCode) || "";
   const vendorSubCodes: string[] = ((matchedVendor as any)?.subsidiary_codes as string[] | undefined) || [];
-  const payeeSubMismatch = claimType === "payment" && !!batchEntity && vendorSubCodes.length > 0 && !vendorSubCodes.includes(batchEntity);
+  const payeeSubMismatch = claimType === "payment" && !!batchEntity && SUBSIDIARY_CODES.has(batchEntity)
+    && vendorSubCodes.length > 0 && !vendorSubCodes.includes(batchEntity);
 
   // IR56M 規則：freelancer 付款，NetSuite 未有呢個人，或者有但超過兩年
   // 冇銀行交易 (last_payment_date) — 一律要重新提交個人資料。
