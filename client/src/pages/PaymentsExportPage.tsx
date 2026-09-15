@@ -53,6 +53,23 @@ type PreviewRow = {
   department: string;
   project: string;
   memo: string;
+  batch_no?: string;
+};
+
+// 同 subsidiary + 同日期 + 同類 (accrual / prepaid) 嘅 JE — 跨批次合併成一張
+type PreviewJournal = {
+  external_id: string;
+  date: string;
+  kind: string;
+  subsidiary: string;
+  batches: string[];
+  lines: number;
+  total: number;
+  memo?: string;
+  preview?: PreviewRow[];
+  status?: string;
+  netsuite_id?: string;
+  error?: string;
 };
 
 type PostResult = {
@@ -69,7 +86,8 @@ type PostResult = {
   is_prepayment?: boolean;
   total?: number;
   header_memo?: string;
-  journals?: { date: string; kind: string; total: number; status: string; netsuite_id?: string; error?: string }[];
+  already_posted?: number;
+  journals?: { date: string; kind: string; total: number; status?: string; netsuite_id?: string; error?: string; external_id?: string; combined?: number }[];
   preview?: PreviewRow[];
 };
 
@@ -88,6 +106,8 @@ export default function PaymentsExportPage() {
   const [preview, setPreview] = useState<PostResult[] | null>(null);
   const [previewIds, setPreviewIds] = useState<string[]>([]);
   const [previewWarnings, setPreviewWarnings] = useState<string[]>([]);
+  const [previewJournals, setPreviewJournals] = useState<PreviewJournal[]>([]);
+  const [postJournals, setPostJournals] = useState<PreviewJournal[]>([]);
 
   const { data: payments } = useQuery({
     queryKey: ["payment-batches"],
@@ -156,6 +176,7 @@ export default function PaymentsExportPage() {
       setPreview(data.results || []);
       setPreviewIds(ids);
       setPreviewWarnings(Array.isArray(data.warnings) ? data.warnings : []);
+      setPreviewJournals(Array.isArray(data.journals) ? data.journals : []);
     } catch (err: any) {
       toast({ title: "Preview 失敗", description: err.message, variant: "destructive" });
     }
@@ -172,6 +193,7 @@ export default function PaymentsExportPage() {
     setPreview(null);
     setPosting(true);
     setPostResults([]);
+    setPostJournals([]);
     try {
       const { data, error } = await supabase.functions.invoke("netsuite-post-vendor-bill", {
         body: { batch_ids: ids },
@@ -179,6 +201,7 @@ export default function PaymentsExportPage() {
       if (error) throw new Error(error.message || "Edge Function 呼叫失敗");
       if (data?.error) throw new Error(data.error);
       setPostResults(data.results || []);
+      setPostJournals(Array.isArray(data.journals) ? data.journals : []);
       toast({
         title: data.failed > 0 ? "部分完成" : "入數完成 ✓",
         description: `新建 ${data.created} 張 bill · ${data.duplicates} 張已 post 過 · ${data.failed} 張失敗`,
@@ -334,14 +357,29 @@ export default function PaymentsExportPage() {
                   {r.status === "error" && <span>✗ {r.error}</span>}
                   {Array.isArray(r.journals) && r.journals.length > 0 && (
                     <span className="text-muted-foreground w-full pl-2">
-                      預付款 JE：{r.journals.map((j) =>
-                        `${j.date} ${j.kind === "accrual" ? "accrual" : "prepaid"} HK$${j.total.toFixed(2)} ${
+                      JE：{r.journals.map((j) =>
+                        `${j.date} ${j.kind === "accrual" ? "accrual" : "prepaid"} HK$${Number(j.total || 0).toFixed(2)}${(j.combined || 1) > 1 ? ` (合併 ${j.combined} 張單)` : ""} ${
                           j.status === "created" ? `✓ ${j.netsuite_id}` : j.status === "duplicate" ? "已 post 過" : "✗"}`
                       ).join(" · ")}
                     </span>
                   )}
                 </div>
               ))}
+              {postJournals.length > 0 && (
+                <div className="text-[11px] pt-1 space-y-0.5">
+                  <div className="font-medium text-muted-foreground">JE（同 subsidiary、同日期合併）— {postJournals.length} 張</div>
+                  {postJournals.map((j) => (
+                    <div key={j.external_id} className={`flex items-center gap-2 flex-wrap ${j.status === "error" ? "text-red-600 dark:text-red-400" : j.status === "created" ? "text-emerald-700 dark:text-emerald-400" : "text-muted-foreground"}`}>
+                      <span className="tabular-nums">{j.date}</span>
+                      <span>{j.kind === "accrual" ? "accrual" : "prepaid"}</span>
+                      <span>{j.subsidiary}</span>
+                      <span className="font-mono">{j.batches.join(", ")}</span>
+                      <span className="tabular-nums">HK${fmtAmt(j.total)}</span>
+                      <span>{j.status === "created" ? `✓ JE ${j.netsuite_id}` : j.status === "duplicate" ? "已 post 過" : `✗ ${j.error || ""}`}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </CardContent>
@@ -425,7 +463,8 @@ export default function PaymentsExportPage() {
                     <span className="text-xs text-muted-foreground">
                       Bill 日期 {r.bill_date}{r.invoice_no ? ` · 發票 ${r.invoice_no}` : ""}{r.due_date ? ` · 到期 ${r.due_date}` : ""}
                       {" · "}總額 HK${fmtAmt(r.total)}
-                      {r.journals && r.journals.length > 0 ? ` · ${r.journals.length} 張 JE` : ""}
+                      {r.journals && r.journals.length > 0 ? ` · ${r.journals.length} 個日期 JE（下面合併顯示）` : ""}
+                      {r.already_posted ? ` · ${r.already_posted} 行 JE 已入過（跳過）` : ""}
                     </span>
                   )}
                   {r.status === "dry_run" && r.header_memo && (
@@ -477,6 +516,57 @@ export default function PaymentsExportPage() {
                 )}
               </div>
             ))}
+            {previewJournals.length > 0 && (
+              <div className="space-y-2">
+                <div className="text-sm font-medium flex items-center gap-2">
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-700 dark:text-amber-500 font-medium">JE</span>
+                  應計 / 預付款 JE — 同 subsidiary、同日期、同類合併，共 {previewJournals.length} 張
+                  <span className="text-xs text-muted-foreground font-normal">（一張 JE 可以包含多張單嘅 transaction；每張單一條貸方行）</span>
+                </div>
+                {previewJournals.map((j) => (
+                  <div key={j.external_id} className="border border-amber-500/30 rounded-md">
+                    <div className="px-3 py-2 bg-amber-500/5 flex items-center gap-2 flex-wrap text-xs">
+                      <span className="font-medium tabular-nums">{j.date}</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-700 dark:text-amber-500 font-medium">{j.kind === "accrual" ? "accrual" : "prepaid"}</span>
+                      <span>{j.subsidiary}</span>
+                      <span className="font-mono text-muted-foreground">{j.batches.join(" + ")}</span>
+                      <span className="text-muted-foreground">· {j.lines} 行 · HK${fmtAmt(j.total)}</span>
+                      {j.memo && <div className="w-full text-muted-foreground">JE Memo：{j.memo}</div>}
+                    </div>
+                    {j.preview && (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs">
+                          <thead className="text-muted-foreground border-b border-border/60">
+                            <tr>
+                              <th className="text-left px-3 py-1.5 font-medium">Batch</th>
+                              <th className="text-left px-2 py-1.5 font-medium">Account</th>
+                              <th className="text-right px-2 py-1.5 font-medium">Debit</th>
+                              <th className="text-right px-2 py-1.5 font-medium">Credit</th>
+                              <th className="text-left px-2 py-1.5 font-medium">Dept</th>
+                              <th className="text-left px-2 py-1.5 font-medium">Project</th>
+                              <th className="text-left px-3 py-1.5 font-medium">Memo</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {j.preview.map((row, i) => (
+                              <tr key={i} className={`border-t border-border/40 ${row.credit != null ? "bg-muted/30" : ""}`}>
+                                <td className="px-3 py-1 font-mono whitespace-nowrap">{row.batch_no}</td>
+                                <td className="px-2 py-1 whitespace-nowrap">{row.account}</td>
+                                <td className="px-2 py-1 text-right tabular-nums">{fmtAmt(row.debit)}</td>
+                                <td className="px-2 py-1 text-right tabular-nums">{fmtAmt(row.credit)}</td>
+                                <td className="px-2 py-1 whitespace-nowrap text-muted-foreground">{row.department}</td>
+                                <td className="px-2 py-1 font-mono text-muted-foreground">{row.project}</td>
+                                <td className="px-3 py-1 text-muted-foreground max-w-[360px] truncate" title={row.memo}>{row.memo}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setPreview(null)} disabled={posting}>取消</Button>

@@ -14,13 +14,15 @@
 //   行日期 = 發票日期 → DR 費用科目 (一般入法)
 //   行日期 < 發票日期 → bill 行 DR 37001010 Accrued Expenses，另出 JE (行日期) DR 費用 / CR 37001010
 //   行日期 > 發票日期 → bill 行 DR 22005010 Prepaid Expenses，另出 JE (行日期) DR 費用 / CR 22005010
-//   同日期嘅行合成一張 JE (unapproved draft)，externalId PAYJE-<batch_no>-<YYYYMMDD>，幂等。
+// JE 合併：同一次入數入面，同 subsidiary + 同日期 + 同類 (accrual / prepaid) 嘅行 —
+//   跨批次都合成一張 JE (每張單一條 CR 行)，externalId PAYJE-<date>-<kind>-S<sub>-<hash of batch nos>。
+//   幂等靠 payment_je_posts (batch, date, kind)：已入過嘅唔會再入，重按只補漏。
 // 一般付款：明細日期 = 發票日期 (表格已驗證)，發票日期做 bill date。
 // Success → claim_batches.status='exported' + netsuite_journal_no='BILL <id>'.
 // Duplicate externalId → status 'duplicate' (幂等，可以放心重按)。
 //
 // Request body: { batch_ids: string[], dry_run?: true }
-// Response: { ok, created, duplicates, failed, results: [...] }
+// Response: { ok, dry_run, warnings, created, duplicates, failed, results: [...], journals: [...] }
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 
 function pctEncode(s: string): string {
@@ -71,11 +73,24 @@ function toHKDate(ts: string | null): string | null {
   if (isNaN(d.getTime())) return null;
   return new Date(d.getTime() + 8 * 3600 * 1000).toISOString().slice(0, 10);
 }
+// deterministic 8-hex hash (FNV-1a) — 合併 JE externalId 用
+function hash8(s: string): string {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+  return h.toString(16).padStart(8, '0');
+}
+const r2 = (n: number) => Math.round(n * 100) / 100;
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
+};
+
+type Kind = 'expense' | 'accrual' | 'prepaid';
+type JeSpec = {
+  batchId: string; batchNo: string; sid: number; date: string; kind: 'accrual' | 'prepaid';
+  dr: any; amt: number; memo: string; deptId?: number; deptCode: string; preview: any;
 };
 
 Deno.serve(async (req) => {
@@ -138,6 +153,22 @@ Deno.serve(async (req) => {
       }
       return `NetSuite ${status}: ${text}`;
     };
+    const postRecord = async (type: 'vendorBill' | 'journalEntry', payload: any): Promise<{ ok: boolean; id?: string; duplicate?: boolean; error?: string }> => {
+      const url = `https://${host}.suitetalk.api.netsuite.com/services/rest/record/v1/${type}`;
+      const header = await authHeader('POST', url, cfg as Record<string, string>);
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { Authorization: header, 'Content-Type': 'application/json', Prefer: 'transient' },
+        body: JSON.stringify(payload),
+      });
+      if (res.status === 204 || res.status === 201 || res.ok) {
+        const loc = res.headers.get('Location') || '';
+        return { ok: true, id: loc.split('/').pop() || 'created' };
+      }
+      const errText = (await res.text()).slice(0, 800);
+      if (/already exists|duplicate/i.test(errText)) return { ok: false, duplicate: true, error: errText };
+      return { ok: false, error: friendlyNsError(res.status, errText) };
+    };
 
     // ---- load batches + lines ----
     const { data: batches, error: bErr } = await svc.from('claim_batches')
@@ -170,6 +201,8 @@ Deno.serve(async (req) => {
     for (const s of subs || []) {
       for (const k of [s.full_name, s.name, s.short_code]) if (k) subId.set(String(k), s.internal_id);
     }
+    const subShort = new Map<number, string>();
+    for (const s of subs || []) subShort.set(Number(s.internal_id), String(s.short_code || s.name || s.internal_id));
     const deptByChargeTo = new Map<string, number>();
     for (const d of depts || []) if (d.charge_to && d.internal_id != null) deptByChargeTo.set(String(d.charge_to), d.internal_id);
     const deptName = new Map<string, string>();
@@ -235,10 +268,8 @@ Deno.serve(async (req) => {
         vendorSubs.get(String(r.entity))!.add(Number(r.subsidiary));
       }
     }
-    const subShort = new Map<number, string>();
-    for (const s of subs || []) subShort.set(Number(s.internal_id), String(s.short_code || s.name || s.internal_id));
 
-    // ---- build + post per batch ----
+    // ---- constants ----
     const ACCRUED_ACCT = '37001010';   // Accrued Expenses - General
     const PREPAID_ACCT = '22005010';   // Prepaid Expenses
     // legacy tax：bill 每行都要 tax code。費用科目 NetSuite 會 default VAT_HK:UNDEF-HK，
@@ -246,24 +277,10 @@ Deno.serve(async (req) => {
     // → 一律明確俾 VAT_HK:UNDEF-HK (0%，internal id 5，同 bill 68892 嘅費用行一樣)
     const TAX_CODE_ID = '5';
     const today = new Date().toISOString().slice(0, 10);
-    const postRecord = async (type: 'vendorBill' | 'journalEntry', payload: any): Promise<{ ok: boolean; id?: string; duplicate?: boolean; error?: string }> => {
-      const url = `https://${host}.suitetalk.api.netsuite.com/services/rest/record/v1/${type}`;
-      const header = await authHeader('POST', url, cfg as Record<string, string>);
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { Authorization: header, 'Content-Type': 'application/json', Prefer: 'transient' },
-        body: JSON.stringify(payload),
-      });
-      if (res.status === 204 || res.status === 201 || res.ok) {
-        const loc = res.headers.get('Location') || '';
-        return { ok: true, id: loc.split('/').pop() || 'created' };
-      }
-      const errText = (await res.text()).slice(0, 800);
-      if (/already exists|duplicate/i.test(errText)) return { ok: false, duplicate: true, error: errText };
-      return { ok: false, error: friendlyNsError(res.status, errText) };
-    };
+    const accruedId = acctId.get(ACCRUED_ACCT);
+    const prepaidId = acctId.get(PREPAID_ACCT);
 
-    // dry_run：預先 probe Bills / JE 權限，preview 即刻話你知入數會唔會 403
+    // dry_run：預先 probe Bills / JE 權限
     const warnings: string[] = [];
     const probeInfo: Record<string, { status: number; text: string }> = {};
     if (dryRun && (batches || []).length > 0) {
@@ -277,8 +294,13 @@ Deno.serve(async (req) => {
       }
     }
 
+    // ---- phase 1: validate + build bill per batch; collect JE line specs ----
+    type Pending = { batch: any; label: string; vendorLabel: string; sid: number; billDate: string; payload: any; lines: number; total: number; headerMemo: string; billPreview: any[] };
+    const pendings: Pending[] = [];
+    const jeSpecs: JeSpec[] = [];
     const results: any[] = [];
     let created = 0, duplicates = 0, failed = 0;
+
     for (const batch of batches || []) {
       const label = `${batch.batch_no || batch.id.slice(0, 8)} · ${batch.payee_name || '?'}`;
       const problems: string[] = [];
@@ -306,22 +328,18 @@ Deno.serve(async (req) => {
 
       // 發票日期 = bill date；冇先用批核日/提交日
       const billDate = String(batch.invoice_date || toHKDate(batch.approved_at) || batch.submit_date || today).slice(0, 10);
-      const accruedId = acctId.get(ACCRUED_ACCT);
-      const prepaidId = acctId.get(PREPAID_ACCT);
       if (batch.is_prepayment && (accruedId == null || prepaidId == null)) {
         problems.push(`預付款科目 ${ACCRUED_ACCT} / ${PREPAID_ACCT} 冇 internal id — 請先同步 Chart of Accounts`);
       }
       const batchDeptId = batch.charge_to_code ? deptByChargeTo.get(String(batch.charge_to_code)) : undefined;
 
       const items: any[] = [];
-      // 預付款：行日期 ≠ 發票日期嘅行另出 JE，同日期合成一張
-      const jeGroups = new Map<string, { date: string; kind: 'accrual' | 'prepaid'; items: any[]; total: number; preview: any[]; memo: string }>();
-      // preview (dry_run 用)：入 NetSuite 前俾用戶睇分錄 — 日期 / 科目 / 借 / 貸 / 部門 / project
       const billPreview: any[] = [];
       const rawMemos: string[] = [];   // 表頭 memo 跟明細行 description
+      const batchSpecs: JeSpec[] = [];
       let total = 0;
       for (const l of lines) {
-        const amt = Math.round(Number(l.hkd_amount || 0) * 100) / 100;
+        const amt = r2(Number(l.hkd_amount || 0));
         if (amt === 0) continue;
         if (amt < 0) { problems.push(`行 #${l.item_no} 金額係負數 — bill 唔接受負數行`); continue; }
         const acctNum = l.expense_category_code ? catAcct.get(l.expense_category_code) : '';
@@ -343,7 +361,7 @@ Deno.serve(async (req) => {
         }
 
         const lineDate = String(l.line_date || billDate).slice(0, 10);
-        const kind: 'expense' | 'accrual' | 'prepaid' =
+        const kind: Kind =
           !batch.is_prepayment || lineDate === billDate ? 'expense'
           : lineDate < billDate ? 'accrual' : 'prepaid';
 
@@ -361,20 +379,20 @@ Deno.serve(async (req) => {
         const billAcctNum = kind === 'expense' ? acctNum : kind === 'accrual' ? ACCRUED_ACCT : PREPAID_ACCT;
         billPreview.push({
           doc: 'BILL', date: billDate, kind, account: acctLabel(billAcctNum), debit: amt, credit: null,
-          department: deptLabel(chargeTo), project: kind === 'expense' ? cp : '', memo: billItem.memo || '',
+          department: deptLabel(chargeTo), project: kind === 'expense' ? cp : '', memo: billItem.memo || '', batch_no: batch.batch_no,
         });
 
-        if (kind !== 'expense') {
-          let g = jeGroups.get(lineDate);
-          if (!g) { g = { date: lineDate, kind, items: [], total: 0, preview: [], memo: memo || '' }; jeGroups.set(lineDate, g); }
+        if (kind !== 'expense' && sid != null) {
           const dr: any = { account: { id: String(aid) }, debit: amt, memo };
           if (did != null) dr.department = { id: String(did) };
           if (jid) dr.entity = { id: jid };  // JE 行 project 經 entity (job)
-          g.items.push(dr);
-          g.total += amt;
-          g.preview.push({
-            doc: 'JE', date: lineDate, kind, account: acctLabel(acctNum), debit: amt, credit: null,
-            department: deptLabel(chargeTo), project: cp, memo: memo || '',
+          batchSpecs.push({
+            batchId: batch.id, batchNo: String(batch.batch_no), sid: Number(sid), date: lineDate, kind, dr, amt,
+            memo: memo || '', deptId: batchDeptId, deptCode: String(batch.charge_to_code || ''),
+            preview: {
+              doc: 'JE', date: lineDate, kind, account: acctLabel(acctNum), debit: amt, credit: null,
+              department: deptLabel(chargeTo), project: cp, memo: memo || '', batch_no: batch.batch_no,
+            },
           });
         }
       }
@@ -401,73 +419,115 @@ Deno.serve(async (req) => {
       if (batch.supplier_invoice_no) payload.tranId = String(batch.supplier_invoice_no).slice(0, 45);
       if (batch.payment_due_date) payload.dueDate = batch.payment_due_date;
 
-      const journals = [...jeGroups.values()].sort((a, b) => a.date.localeCompare(b.date)).map((g) => {
-        const crAcct = g.kind === 'accrual' ? accruedId : prepaidId;
-        // JE 貸方 (22005010 / 37001010) 同 JE 表頭 memo 都跟返明細行 description
-        const jeMemo = (g.memo || `${g.kind === 'accrual' ? 'Accrued expenses' : 'Prepaid amortisation'} ${batch.batch_no} - ${batch.payee_name || ''}`).slice(0, 4000);
-        const cr: any = {
-          account: { id: String(crAcct) },
-          credit: Math.round(g.total * 100) / 100,
-          memo: jeMemo,
-        };
-        if (batchDeptId != null) cr.department = { id: String(batchDeptId) };
-        const crPreview = {
-          doc: 'JE', date: g.date, kind: g.kind, account: acctLabel(g.kind === 'accrual' ? ACCRUED_ACCT : PREPAID_ACCT),
-          debit: null, credit: Math.round(g.total * 100) / 100,
-          department: deptLabel(String(batch.charge_to_code || '')), project: '', memo: cr.memo,
-        };
+      pendings.push({ batch, label, vendorLabel: vendor!.label, sid: Number(sid), billDate, payload, lines: items.length, total: r2(total), headerMemo, billPreview });
+      jeSpecs.push(...batchSpecs);
+    }
+
+    // ---- phase 2: combined JE groups (同 subsidiary + 日期 + 類)，幂等 by payment_je_posts ----
+    const okIds = pendings.map((p) => p.batch.id);
+    const alreadyPosted = new Map<string, { external_id: string; netsuite_id: string | null }>();
+    if (okIds.length > 0) {
+      const { data: prev } = await svc.from('payment_je_posts').select('batch_id,je_date,kind,external_id,netsuite_id').in('batch_id', okIds);
+      for (const r of prev || []) alreadyPosted.set(`${r.batch_id}|${String(r.je_date).slice(0, 10)}|${r.kind}`, { external_id: r.external_id, netsuite_id: r.netsuite_id });
+    }
+    const skippedByBatch = new Map<string, number>();
+    const groups = new Map<string, { sid: number; date: string; kind: 'accrual' | 'prepaid'; specs: JeSpec[] }>();
+    for (const s of jeSpecs) {
+      if (alreadyPosted.has(`${s.batchId}|${s.date}|${s.kind}`)) {
+        skippedByBatch.set(s.batchId, (skippedByBatch.get(s.batchId) || 0) + 1);
+        continue;
+      }
+      const key = `${s.sid}|${s.date}|${s.kind}`;
+      if (!groups.has(key)) groups.set(key, { sid: s.sid, date: s.date, kind: s.kind, specs: [] });
+      groups.get(key)!.specs.push(s);
+    }
+    const journals = [...groups.values()]
+      .sort((a, b) => a.date.localeCompare(b.date) || a.kind.localeCompare(b.kind) || a.sid - b.sid)
+      .map((g) => {
+        const batchNos = [...new Set(g.specs.map((s) => s.batchNo))].sort();
+        const batchIdsIn = [...new Set(g.specs.map((s) => s.batchId))];
+        const externalId = `PAYJE-${g.date.replace(/-/g, '')}-${g.kind}-S${g.sid}-${hash8(batchNos.join('+'))}`;
+        const crAcctNum = g.kind === 'accrual' ? ACCRUED_ACCT : PREPAID_ACCT;
+        const crAcctId = g.kind === 'accrual' ? accruedId : prepaidId;
+        const kindLabel = g.kind === 'accrual' ? 'Accrued expenses' : 'Prepaid amortisation';
+        // 每張單一條 CR 行 (memo = 該單該日明細 description)，方便追返邊張單
+        const crItems: any[] = [];
+        const crPreview: any[] = [];
+        const perBatch = new Map<string, number>();
+        for (const bn of batchNos) {
+          const ss = g.specs.filter((s) => s.batchNo === bn);
+          const tot = r2(ss.reduce((a, s) => a + s.amt, 0));
+          perBatch.set(ss[0].batchId, tot);
+          const memo = (ss[0].memo || `${kindLabel} ${bn}`).slice(0, 4000);
+          const cr: any = { account: { id: String(crAcctId) }, credit: tot, memo };
+          if (ss[0].deptId != null) cr.department = { id: String(ss[0].deptId) };
+          crItems.push(cr);
+          crPreview.push({
+            doc: 'JE', date: g.date, kind: g.kind, account: acctLabel(crAcctNum), debit: null, credit: tot,
+            department: deptLabel(ss[0].deptCode), project: '', memo, batch_no: bn,
+          });
+        }
+        const total = r2(g.specs.reduce((a, s) => a + s.amt, 0));
+        const single = batchNos.length === 1;
+        const memo = (single
+          ? (g.specs[0].memo || `${kindLabel} ${g.date} - ${batchNos[0]}`)
+          : `${kindLabel} ${g.date} - ${batchNos.join(', ')}`).slice(0, 4000);
         return {
-          date: g.date, kind: g.kind, total: Math.round(g.total * 100) / 100,
-          preview: [...g.preview, crPreview],
+          external_id: externalId, date: g.date, kind: g.kind, sid: g.sid, subsidiary: subShort.get(g.sid) || String(g.sid),
+          batches: batchNos, batch_ids: batchIdsIn, per_batch: perBatch, lines: g.specs.length, total, memo,
+          preview: [...g.specs.map((s) => s.preview), ...crPreview],
           payload: {
-            externalId: `PAYJE-${String(batch.batch_no).replace(/[^A-Za-z0-9-]+/g, '')}-${g.date.replace(/-/g, '')}`,
-            subsidiary: { id: String(sid) },
-            currency: { id: '1' },
-            tranDate: g.date,
-            memo: jeMemo,
-            approved: false,
-            line: { items: [...g.items, cr] },
+            externalId, subsidiary: { id: String(g.sid) }, currency: { id: '1' }, tranDate: g.date, memo, approved: false,
+            line: { items: [...g.specs.map((s) => s.dr), ...crItems] },
           },
         };
       });
 
-      if (dryRun) {
+    const batchJournals = (batchId: string, withStatus?: Map<string, any>) =>
+      journals.filter((j) => j.batch_ids.includes(batchId)).map((j) => {
+        const st = withStatus?.get(j.external_id);
+        return {
+          date: j.date, kind: j.kind, external_id: j.external_id, combined: j.batches.length,
+          total: j.per_batch.get(batchId) || 0,
+          ...(st ? { status: st.status, netsuite_id: st.netsuite_id, error: st.error } : {}),
+        };
+      });
+
+    if (dryRun) {
+      for (const p of pendings) {
         results.push({
-          batch_id: batch.id, batch_no: batch.batch_no, label, vendor: vendor!.label, status: 'dry_run',
-          bill_date: billDate, lines: items.length, total: Math.round(total * 100) / 100, header_memo: headerMemo,
-          invoice_no: batch.supplier_invoice_no || null, due_date: batch.payment_due_date || null, is_prepayment: !!batch.is_prepayment,
-          journals: journals.map((j) => ({ date: j.date, kind: j.kind, total: j.total, lines: j.payload.line.items.length })),
-          // 完整分錄 preview：bill 行 + AP 貸方 + 每張 JE
+          batch_id: p.batch.id, batch_no: p.batch.batch_no, label: p.label, vendor: p.vendorLabel, status: 'dry_run',
+          bill_date: p.billDate, lines: p.lines, total: p.total, header_memo: p.headerMemo,
+          invoice_no: p.batch.supplier_invoice_no || null, due_date: p.batch.payment_due_date || null, is_prepayment: !!p.batch.is_prepayment,
+          journals: batchJournals(p.batch.id),
+          already_posted: skippedByBatch.get(p.batch.id) || 0,
+          // bill 分錄 preview：bill 行 + AP 貸方 (JE 喺 top-level journals，同日期跨批次合併)
           preview: [
-            ...billPreview,
-            { doc: 'BILL', date: billDate, kind: 'ap', account: acctLabel('33000010'), debit: null, credit: Math.round(total * 100) / 100,
-              department: '', project: '', memo: `Accounts Payable - ${vendor!.label}` },
-            ...journals.flatMap((j) => j.preview),
+            ...p.billPreview,
+            { doc: 'BILL', date: p.billDate, kind: 'ap', account: acctLabel('33000010'), debit: null, credit: p.total,
+              department: '', project: '', memo: `Accounts Payable - ${p.vendorLabel}`, batch_no: p.batch.batch_no },
           ],
         });
-        continue;
       }
+      return new Response(
+        JSON.stringify({
+          ok: failed === 0, dry_run: true, warnings, probe: probeInfo, batches: (batches || []).length, created, duplicates, failed, results,
+          journals: journals.map((j) => ({ external_id: j.external_id, date: j.date, kind: j.kind, subsidiary: j.subsidiary, batches: j.batches, lines: j.lines, total: j.total, memo: j.memo, preview: j.preview })),
+        }, null, 2),
+        { headers: { ...CORS, 'Content-Type': 'application/json' } },
+      );
+    }
 
-      const bill = await postRecord('vendorBill', payload);
+    // ---- phase 3: post bills ----
+    const billOut = new Map<string, { status: 'created' | 'duplicate'; id?: string; dbProblem: string }>();
+    for (const p of pendings) {
+      const bill = await postRecord('vendorBill', p.payload);
       if (!bill.ok && !bill.duplicate) {
         failed++;
-        results.push({ batch_id: batch.id, batch_no: batch.batch_no, label, status: 'error', error: bill.error });
+        results.push({ batch_id: p.batch.id, batch_no: p.batch.batch_no, label: p.label, status: 'error', error: bill.error });
         continue;
       }
       const billStatus: 'created' | 'duplicate' = bill.ok ? 'created' : 'duplicate';
-
-      // 預付款 JE — bill 新建或已存在都照 post (externalId 幂等，重按只會補漏)
-      const jeResults: any[] = [];
-      let jeFailed = 0;
-      for (const j of journals) {
-        const r = await postRecord('journalEntry', j.payload);
-        if (r.ok) jeResults.push({ date: j.date, kind: j.kind, total: j.total, status: 'created', netsuite_id: r.id });
-        else if (r.duplicate) jeResults.push({ date: j.date, kind: j.kind, total: j.total, status: 'duplicate' });
-        else { jeFailed++; jeResults.push({ date: j.date, kind: j.kind, total: j.total, status: 'error', error: r.error }); }
-      }
-      const jeIds = jeResults.filter((r) => r.netsuite_id).map((r) => r.netsuite_id);
-      const jeNote = (jeIds.length ? `; JE ${jeIds.join(', ')}` : '') + (jeFailed ? `; ${jeFailed} JE 失敗` : '');
-
       // CardRecon 狀態更新 — 失敗一定要報出嚟 (bill 已經喺 NetSuite，唔可以靜靜地留喺 approved)
       let dbProblem = '';
       if (billStatus === 'created') {
@@ -477,45 +537,94 @@ Deno.serve(async (req) => {
           netsuite_journal_no: `BILL ${bill.id}`,
           exported_at: new Date().toISOString(),
           exported_by_user_id: claims.sub || null,
-        }).eq('id', batch.id).in('status', ['approved', 'exported']).select('id');
+        }).eq('id', p.batch.id).in('status', ['approved', 'exported']).select('id');
         if (upd.error) dbProblem = `CardRecon 狀態更新失敗 (bill ${bill.id} 已喺 NetSuite): ${upd.error.message}`;
         else if (!upd.data?.length) dbProblem = `CardRecon 狀態更新失敗 (bill ${bill.id} 已喺 NetSuite): 批次狀態已變`;
-        const aud = await svc.from('claim_audit_log').insert({
-          batch_id: batch.id, action: 'exported', from_status: batch.status, to_status: 'exported',
-          actor_user_id: claims.sub || null, comment: `NetSuite vendor bill ${bill.id} (${vendor!.label})${jeNote}`,
-        });
-        if (aud.error && !dbProblem) dbProblem = `audit log 寫入失敗: ${aud.error.message}`;
       } else {
         duplicates++;
         const upd = await svc.from('claim_batches').update({
           status: 'exported',
           exported_at: new Date().toISOString(),
           exported_by_user_id: claims.sub || null,
-        }).eq('id', batch.id).eq('status', 'approved');
+        }).eq('id', p.batch.id).eq('status', 'approved');
         if (upd.error) dbProblem = `CardRecon 狀態更新失敗: ${upd.error.message}`;
-        if (jeIds.length) {
-          await svc.from('claim_audit_log').insert({
-            batch_id: batch.id, action: 'exported', from_status: 'exported', to_status: 'exported',
-            actor_user_id: claims.sub || null, comment: `NetSuite bill 已存在${jeNote}`,
-          });
-        }
       }
-      if (jeFailed > 0 || dbProblem) failed++;
+      billOut.set(p.batch.id, { status: billStatus, id: bill.id, dbProblem });
+    }
+
+    // ---- phase 4: post combined JEs (只計 bill 成功 / 已存在嘅批次) ----
+    const jeOut = new Map<string, { status: 'created' | 'duplicate' | 'error'; netsuite_id?: string; error?: string }>();
+    for (const j of journals) {
+      const activeIds = j.batch_ids.filter((id) => billOut.has(id));
+      if (activeIds.length === 0) continue;
+      let payload = j.payload;
+      let externalId = j.external_id;
+      let batchesNow = j.batches;
+      if (activeIds.length !== j.batch_ids.length) {
+        // 有批次 bill 失敗 → 只入其餘批次嘅行，externalId 跟返實際包含嘅批次
+        const idOfNo = new Map(jeSpecs.map((s) => [s.batchNo, s.batchId]));
+        batchesNow = j.batches.filter((bn) => activeIds.includes(idOfNo.get(bn) || ''));
+        externalId = `PAYJE-${j.date.replace(/-/g, '')}-${j.kind}-S${j.sid}-${hash8(batchesNow.join('+'))}`;
+        const drItems = jeSpecs.filter((s) => s.date === j.date && s.kind === j.kind && s.sid === j.sid && activeIds.includes(s.batchId)).map((s) => s.dr);
+        // CR 行同 j.batches 一一對應 (phase 2 按 batchNos 順序建)
+        const crItems = payload.line.items.slice(j.lines).filter((_: any, idx: number) => batchesNow.includes(j.batches[idx]));
+        payload = { ...payload, externalId, line: { items: [...drItems, ...crItems] } };
+      }
+      const r = await postRecord('journalEntry', payload);
+      const status: 'created' | 'duplicate' | 'error' = r.ok ? 'created' : r.duplicate ? 'duplicate' : 'error';
+      jeOut.set(j.external_id, { status, netsuite_id: r.id, error: r.error });
+      if (status !== 'error') {
+        const rows = activeIds.map((id) => ({
+          batch_id: id, je_date: j.date, kind: j.kind, external_id: externalId, netsuite_id: r.id || null,
+          amount: j.per_batch.get(id) || 0, posted_by_user_id: claims.sub || null,
+        }));
+        const ins = await svc.from('payment_je_posts').upsert(rows, { onConflict: 'batch_id,je_date,kind' });
+        if (ins.error) jeOut.set(j.external_id, { status, netsuite_id: r.id, error: `JE 已入 NetSuite 但 payment_je_posts 記錄失敗: ${ins.error.message}` });
+      }
+    }
+
+    // ---- phase 5: per-batch results + audit ----
+    for (const p of pendings) {
+      const bo = billOut.get(p.batch.id);
+      if (!bo) continue;
+      const mine = batchJournals(p.batch.id, jeOut);
+      const jeFailed = mine.filter((m: any) => m.status === 'error').length;
+      const jeIds = mine.filter((m: any) => m.netsuite_id).map((m: any) => m.netsuite_id);
+      const jeNote = (jeIds.length ? `; JE ${[...new Set(jeIds)].join(', ')}` : '') + (jeFailed ? `; ${jeFailed} JE 失敗` : '');
+      if (bo.status === 'created') {
+        const aud = await svc.from('claim_audit_log').insert({
+          batch_id: p.batch.id, action: 'exported', from_status: p.batch.status, to_status: 'exported',
+          actor_user_id: claims.sub || null, comment: `NetSuite vendor bill ${bo.id} (${p.vendorLabel})${jeNote}`,
+        });
+        if (aud.error && !bo.dbProblem) bo.dbProblem = `audit log 寫入失敗: ${aud.error.message}`;
+      } else if (jeIds.length) {
+        await svc.from('claim_audit_log').insert({
+          batch_id: p.batch.id, action: 'exported', from_status: 'exported', to_status: 'exported',
+          actor_user_id: claims.sub || null, comment: `NetSuite bill 已存在${jeNote}`,
+        });
+      }
+      if (jeFailed > 0 || bo.dbProblem) failed++;
       const errParts: string[] = [];
-      if (jeFailed > 0) errParts.push(`${jeFailed} 張 JE 入唔到: ` + jeResults.filter((r) => r.status === 'error').map((r) => `${r.date} ${r.error}`).join(' | '));
-      if (dbProblem) errParts.push(dbProblem);
-      if (!errParts.length && billStatus === 'duplicate') errParts.push('externalId already posted (bill 已存在 NetSuite)');
+      if (jeFailed > 0) errParts.push(`${jeFailed} 張 JE 入唔到: ` + mine.filter((m: any) => m.status === 'error').map((m: any) => `${m.date} ${m.error}`).join(' | '));
+      if (bo.dbProblem) errParts.push(bo.dbProblem);
+      if (!errParts.length && bo.status === 'duplicate') errParts.push('externalId already posted (bill 已存在 NetSuite)');
       results.push({
-        batch_id: batch.id, batch_no: batch.batch_no, label, vendor: vendor!.label,
-        status: jeFailed > 0 || dbProblem ? 'partial' : billStatus,
-        netsuite_id: bill.id, bill_date: billDate, lines: items.length, total: Math.round(total * 100) / 100,
-        journals: jeResults,
+        batch_id: p.batch.id, batch_no: p.batch.batch_no, label: p.label, vendor: p.vendorLabel,
+        status: jeFailed > 0 || bo.dbProblem ? 'partial' : bo.status,
+        netsuite_id: bo.id, bill_date: p.billDate, lines: p.lines, total: p.total,
+        journals: mine, already_posted: skippedByBatch.get(p.batch.id) || 0,
         error: errParts.length ? errParts.join(' | ') : undefined,
       });
     }
 
     return new Response(
-      JSON.stringify({ ok: failed === 0, dry_run: dryRun, warnings, probe: probeInfo, batches: (batches || []).length, created, duplicates, failed, results }, null, 2),
+      JSON.stringify({
+        ok: failed === 0, dry_run: false, warnings, probe: probeInfo, batches: (batches || []).length, created, duplicates, failed, results,
+        journals: journals.filter((j) => jeOut.has(j.external_id)).map((j) => ({
+          external_id: j.external_id, date: j.date, kind: j.kind, subsidiary: j.subsidiary, batches: j.batches, lines: j.lines, total: j.total,
+          ...jeOut.get(j.external_id),
+        })),
+      }, null, 2),
       { headers: { ...CORS, 'Content-Type': 'application/json' } },
     );
   } catch (e) {
