@@ -112,6 +112,24 @@ Deno.serve(async (req) => {
       if (!res.ok) throw new Error(`SuiteQL ${res.status}: ${(await res.text()).slice(0, 300)}`);
       return (await res.json()).items || [];
     };
+    // REST record GET — 用嚟做權限 probe (GET <type>/0：有權限會 404，冇權限會 403)
+    const nsGet = async (path: string): Promise<{ ok: boolean; status: number; text: string }> => {
+      const url = `https://${host}.suitetalk.api.netsuite.com/services/rest/record/v1/${path}`;
+      const header = await authHeader('GET', url, cfg as Record<string, string>);
+      const res = await fetch(url, { method: 'GET', headers: { Authorization: header, 'Content-Type': 'application/json' } });
+      return { ok: res.ok, status: res.status, text: res.ok ? '' : (await res.text()).slice(0, 800) };
+    };
+    // NetSuite 403 INSUFFICIENT_PERMISSION → 講清楚 admin 要加咩權限
+    const friendlyNsError = (status: number, text: string): string => {
+      if (status === 403 && /INSUFFICIENT_PERMISSION|Permission Violation/i.test(text)) {
+        const m = text.match(/'([^']+)'\s*permission/i);
+        const perm = m ? m[1].replace(/\s*->\s*/g, ' → ') : 'Transactions → Bills';
+        return `NetSuite 權限不足 (403)：integration token 個 role 冇「${perm}」權限。`
+          + `請 NetSuite Administrator 去 Setup → Users/Roles → Manage Roles → 揀 CardRecon token 用嘅 role → Permissions → Transactions，`
+          + `加「Bills」= Create (或 Full)；預付款仲要「Make Journal Entry」= Create。改完唔使重新產生 token。`;
+      }
+      return `NetSuite ${status}: ${text}`;
+    };
 
     // ---- load batches + lines ----
     const { data: batches, error: bErr } = await svc.from('claim_batches')
@@ -212,8 +230,19 @@ Deno.serve(async (req) => {
       }
       const errText = (await res.text()).slice(0, 800);
       if (/already exists|duplicate/i.test(errText)) return { ok: false, duplicate: true, error: errText };
-      return { ok: false, error: `NetSuite ${res.status}: ${errText}` };
+      return { ok: false, error: friendlyNsError(res.status, errText) };
     };
+
+    // dry_run：預先 probe Bills / JE 權限，preview 即刻話你知入數會唔會 403
+    const warnings: string[] = [];
+    if (dryRun && (batches || []).length > 0) {
+      const probe = await nsGet('vendorBill/0');
+      if (!probe.ok && probe.status !== 404) warnings.push(`Vendor Bill — ${friendlyNsError(probe.status, probe.text)}`);
+      if ((batches || []).some((b: any) => b.is_prepayment)) {
+        const p2 = await nsGet('journalEntry/0');
+        if (!p2.ok && p2.status !== 404) warnings.push(`Journal Entry (預付款) — ${friendlyNsError(p2.status, p2.text)}`);
+      }
+    }
 
     const results: any[] = [];
     let created = 0, duplicates = 0, failed = 0;
@@ -427,7 +456,7 @@ Deno.serve(async (req) => {
     }
 
     return new Response(
-      JSON.stringify({ ok: failed === 0, dry_run: dryRun, batches: (batches || []).length, created, duplicates, failed, results }, null, 2),
+      JSON.stringify({ ok: failed === 0, dry_run: dryRun, warnings, batches: (batches || []).length, created, duplicates, failed, results }, null, 2),
       { headers: { ...CORS, 'Content-Type': 'application/json' } },
     );
   } catch (e) {

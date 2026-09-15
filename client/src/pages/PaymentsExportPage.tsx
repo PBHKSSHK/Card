@@ -86,6 +86,7 @@ export default function PaymentsExportPage() {
   const [previewing, setPreviewing] = useState(false);
   const [preview, setPreview] = useState<PostResult[] | null>(null);
   const [previewIds, setPreviewIds] = useState<string[]>([]);
+  const [previewWarnings, setPreviewWarnings] = useState<string[]>([]);
 
   const { data: payments } = useQuery({
     queryKey: ["payment-batches"],
@@ -153,6 +154,7 @@ export default function PaymentsExportPage() {
       if (data?.error) throw new Error(data.error);
       setPreview(data.results || []);
       setPreviewIds(ids);
+      setPreviewWarnings(Array.isArray(data.warnings) ? data.warnings : []);
     } catch (err: any) {
       toast({ title: "Preview 失敗", description: err.message, variant: "destructive" });
     }
@@ -404,6 +406,12 @@ export default function PaymentsExportPage() {
             <DialogTitle>入 NetSuite 前 Preview — 請核對分錄</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
+            {previewWarnings.length > 0 && (
+              <div className="rounded border border-red-500/40 bg-red-500/10 p-3 text-xs text-red-700 dark:text-red-400 space-y-1">
+                <div className="font-medium">⚠ NetSuite 權限檢查未通過 — 撳「確認入 NetSuite」會失敗，請先搞掂權限：</div>
+                {previewWarnings.map((w, i) => <div key={i} className="whitespace-pre-wrap">{w}</div>)}
+              </div>
+            )}
             {(preview || []).map((r) => (
               <div key={r.batch_id || r.batch_no || ""} className="border border-border/60 rounded-md">
                 <div className="px-3 py-2 bg-muted/40 flex items-center gap-2 flex-wrap text-sm">
