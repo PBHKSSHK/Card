@@ -319,7 +319,7 @@ export default function NewClaimPage() {
         .from("user_profiles")
         .select("user_id, email, full_name, role")
         .order("full_name");
-      if (error) return [];
+      if (error) throw error;
       return data || [];
     },
     enabled: isSuperUser,
@@ -592,7 +592,7 @@ export default function NewClaimPage() {
         .select("category_key, label_zh, label_en, ns_account_number, sort_order, is_active, admin_only")
         .eq("is_active", true)
         .order("sort_order");
-      if (error) return [];
+      if (error) throw error;
       return data || [];
     },
   });
@@ -619,7 +619,7 @@ export default function NewClaimPage() {
         .eq("is_inactive", false)
         .eq("is_person", payeeType === "freelancer")
         .order("company_name");
-      if (error) return [];
+      if (error) throw error;
       return data || [];
     },
     enabled: claimType === "payment",

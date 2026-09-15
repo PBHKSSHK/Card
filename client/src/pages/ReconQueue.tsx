@@ -703,7 +703,7 @@ export default function ReconQueue() {
       const { data, error } = await supabase
         .from("ns_credit_card_accounts")
         .select("card_identifier, card_last4, cardholder_name, bank");
-      if (error) return [];
+      if (error) throw error;
       return (data || []) as { card_identifier: string; card_last4: string | null; cardholder_name: string; bank: string }[];
     },
     retry: false,

@@ -18,10 +18,9 @@ export function useNoLedgerEntities(): Set<string> {
       const { data, error } = await supabase
         .from("ns_intercompany_accounts")
         .select("entity_code, has_payable_side, ar_account_code");
-      if (error) return [];
+      if (error) throw error;
       return (data || []) as { entity_code: string; has_payable_side: boolean; ar_account_code: string | null }[];
     },
-    retry: false,
     staleTime: 5 * 60_000,
   });
   return useMemo(() => {

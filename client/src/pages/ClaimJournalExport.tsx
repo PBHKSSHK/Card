@@ -238,13 +238,13 @@ export default function ClaimJournalExport() {
   });
 
   // user_profiles: claimant_user_id → email (super user only)
-  const { data: userProfiles } = useQuery<{ user_id: string; email: string | null; full_name: string | null }[]>({
+  const { data: userProfiles = [] } = useQuery<{ user_id: string; email: string | null; full_name: string | null }[]>({
     queryKey: ["user-profiles-claim-export"],
     queryFn: async () => {
       const { data, error } = await supabase
         .from("user_profiles")
         .select("user_id, email, full_name");
-      if (error) return [];
+      if (error) throw error;
       return (data || []) as any;
     },
   });

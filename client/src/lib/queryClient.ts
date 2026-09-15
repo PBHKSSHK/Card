@@ -47,7 +47,11 @@ export const queryClient = new QueryClient({
       refetchInterval: false,
       refetchOnWindowFocus: false,
       staleTime: Infinity,
-      retry: false,
+      // 重試 2 次 (1s / 2s backoff)：頁面閒置後 access token 過期，第一個 request
+      // 會 401 "JWT expired"，supabase-js 自動 refresh 後重試就成功。之前 retry:false
+      // + queryFn 吞錯誤 return [] → 空 list 被 cache 到成個 session (category 冇得揀)。
+      retry: 2,
+      retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 4000),
     },
     mutations: {
       retry: false,

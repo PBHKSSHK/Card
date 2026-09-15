@@ -982,7 +982,7 @@ export default function JournalExport() {
     queryKey: ["ns-card-journal-posts"],
     queryFn: async () => {
       const { data, error } = await supabase.from("ns_card_journal_posts").select("external_id, netsuite_id");
-      if (error) return [];
+      if (error) throw error;
       return (data || []) as { external_id: string; netsuite_id: string | null }[];
     },
     retry: false,

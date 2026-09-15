@@ -104,7 +104,7 @@ export default function ClaimDetailPage() {
         .select("*")
         .eq("batch_id", claimId)
         .order("uploaded_at");
-      if (error) return [];
+      if (error) throw error;
       return data || [];
     },
     enabled: !!claimId,
@@ -131,7 +131,7 @@ export default function ClaimDetailPage() {
         .from("expense_categories")
         .select("category_key, label_zh, label_en, ns_account_number")
         .eq("is_active", true);
-      if (error) return [];
+      if (error) throw error;
       return data || [];
     },
   });
@@ -158,7 +158,7 @@ export default function ClaimDetailPage() {
         .select("*, user_profiles!claim_audit_log_actor_user_id_fkey(email, full_name)")
         .eq("batch_id", claimId)
         .order("created_at", { ascending: false });
-      if (error) return [];
+      if (error) throw error;
       return data || [];
     },
     enabled: !!claimId,

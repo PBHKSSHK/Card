@@ -206,7 +206,7 @@ export default function BankUploadCentre() {
         .select("id, gl_account_code, gl_account_name, subsidiary_code, bank, account_label, account_number, currency")
         .eq("is_active", true)
         .order("gl_account_code");
-      if (error) return [];
+      if (error) throw error;
       return (data || []) as BankAcct[];
     },
   });
