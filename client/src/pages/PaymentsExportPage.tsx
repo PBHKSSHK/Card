@@ -134,11 +134,15 @@ export default function PaymentsExportPage() {
 
   // Step 1：dry_run 拎分錄 preview (唔會寫 NetSuite)
   const handlePreview = async () => {
-    const ids = readyBatches.filter(b => selectedIds.has(b.id)).map(b => b.id);
+    // 未剔選 → 預覽全部（當前 subsidiary filter 內）已批核批次；有剔選 → 只預覽已選
+    const ids = selectedIds.size > 0
+      ? readyBatches.filter(b => selectedIds.has(b.id)).map(b => b.id)
+      : readyBatches.map(b => b.id);
     if (ids.length === 0) {
-      toast({ title: "未揀批次", description: "請先剔選要入數嘅批次", variant: "destructive" });
+      toast({ title: "冇已批核批次", description: "冇可以入數嘅批次", variant: "destructive" });
       return;
     }
+    if (selectedIds.size === 0) setSelectedIds(new Set(ids));
     setPreviewing(true);
     setPostResults([]);
     try {
@@ -269,10 +273,10 @@ export default function PaymentsExportPage() {
                 {billsSubOptions.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
               </SelectContent>
             </Select>
-            <Button size="sm" onClick={handlePreview} disabled={posting || previewing || selectedIds.size === 0}
+            <Button size="sm" onClick={handlePreview} disabled={posting || previewing || readyBatches.length === 0}
               data-testid="button-preview-bills">
               {previewing || posting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Eye className="h-4 w-4 mr-2" />}
-              Preview {selectedIds.size > 0 ? `${selectedIds.size} 張` : ""} 入數分錄
+              Preview {selectedIds.size > 0 ? `${selectedIds.size} 張` : `全部 ${readyBatches.length} 張`} 入數分錄
             </Button>
           </div>
         </CardHeader>
@@ -280,6 +284,7 @@ export default function PaymentsExportPage() {
           <div className="text-[11px] text-muted-foreground">
             Vendor 用「收款人名」對應 NetSuite vendor(companyname / entityid,唔分大小寫);供應商發票號碼做 bill Reference No。
             入完數 status 自動變「已入 NetSuite」,重按唔會重複 (externalId = batch no)。
+            撳「Preview」未剔選 = 預覽全部已批核批次；只想入部分就先剔選。Preview 之後撳「確認入 NetSuite」先會真正入數。
           </div>
           {readyBatches.length === 0 && (
             <div className="text-sm text-muted-foreground py-4 text-center">冇已批核、未入數嘅批次</div>
