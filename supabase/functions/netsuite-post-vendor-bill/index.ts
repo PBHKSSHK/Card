@@ -315,7 +315,7 @@ Deno.serve(async (req) => {
 
       const items: any[] = [];
       // 預付款：行日期 ≠ 發票日期嘅行另出 JE，同日期合成一張
-      const jeGroups = new Map<string, { date: string; kind: 'accrual' | 'prepaid'; items: any[]; total: number; preview: any[] }>();
+      const jeGroups = new Map<string, { date: string; kind: 'accrual' | 'prepaid'; items: any[]; total: number; preview: any[]; memo: string }>();
       // preview (dry_run 用)：入 NetSuite 前俾用戶睇分錄 — 日期 / 科目 / 借 / 貸 / 部門 / project
       const billPreview: any[] = [];
       const rawMemos: string[] = [];   // 表頭 memo 跟明細行 description
@@ -347,12 +347,12 @@ Deno.serve(async (req) => {
           !batch.is_prepayment || lineDate === billDate ? 'expense'
           : lineDate < billDate ? 'accrual' : 'prepaid';
 
+        // 每行 memo (包括 Accrued / Prepaid 行) 一律 = 明細行 description
         const billItem: any = {
           account: { id: String(kind === 'expense' ? aid : kind === 'accrual' ? accruedId : prepaidId) },
           amount: amt,
           taxCode: { id: TAX_CODE_ID },
-          memo: kind === 'expense' ? memo
-            : `${kind === 'accrual' ? 'Accrued' : 'Prepaid'} ${lineDate} - ${memo || ''}`.trim().slice(0, 4000),
+          memo,
         };
         if (did != null) billItem.department = { id: String(did) };
         if (kind === 'expense' && jid) billItem.customer = { id: jid };  // bill expense line books project 經 customer(job) field
@@ -366,7 +366,7 @@ Deno.serve(async (req) => {
 
         if (kind !== 'expense') {
           let g = jeGroups.get(lineDate);
-          if (!g) { g = { date: lineDate, kind, items: [], total: 0, preview: [] }; jeGroups.set(lineDate, g); }
+          if (!g) { g = { date: lineDate, kind, items: [], total: 0, preview: [], memo: memo || '' }; jeGroups.set(lineDate, g); }
           const dr: any = { account: { id: String(aid) }, debit: amt, memo };
           if (did != null) dr.department = { id: String(did) };
           if (jid) dr.entity = { id: jid };  // JE 行 project 經 entity (job)
@@ -386,10 +386,9 @@ Deno.serve(async (req) => {
         continue;
       }
 
-      // bill 表頭 memo 跟返明細行 description (多行用 | 連接)；冇 description 先用 batch 資料
-      const headerMemo = (rawMemos.length
-        ? rawMemos.join(' | ')
-        : `CardRecon payment requisition ${batch.batch_no} - req by ${batch.full_name || '?'}`).slice(0, 4000);
+      // bill 表頭 memo 跟返第一行明細 description；冇 description 先用 batch 資料
+      const headerMemo = (rawMemos[0]
+        || `CardRecon payment requisition ${batch.batch_no} - req by ${batch.full_name || '?'}`).slice(0, 4000);
       const payload: any = {
         externalId: batch.batch_no,
         entity: { id: vendor!.id },
@@ -404,10 +403,12 @@ Deno.serve(async (req) => {
 
       const journals = [...jeGroups.values()].sort((a, b) => a.date.localeCompare(b.date)).map((g) => {
         const crAcct = g.kind === 'accrual' ? accruedId : prepaidId;
+        // JE 貸方 (22005010 / 37001010) 同 JE 表頭 memo 都跟返明細行 description
+        const jeMemo = (g.memo || `${g.kind === 'accrual' ? 'Accrued expenses' : 'Prepaid amortisation'} ${batch.batch_no} - ${batch.payee_name || ''}`).slice(0, 4000);
         const cr: any = {
           account: { id: String(crAcct) },
           credit: Math.round(g.total * 100) / 100,
-          memo: `${g.kind === 'accrual' ? 'Accrued expenses' : 'Prepaid amortisation'} ${batch.batch_no} - ${batch.payee_name || ''}`.slice(0, 4000),
+          memo: jeMemo,
         };
         if (batchDeptId != null) cr.department = { id: String(batchDeptId) };
         const crPreview = {
@@ -423,7 +424,7 @@ Deno.serve(async (req) => {
             subsidiary: { id: String(sid) },
             currency: { id: '1' },
             tranDate: g.date,
-            memo: `CardRecon ${batch.batch_no} ${g.kind === 'accrual' ? 'accrual' : 'prepaid amortisation'} - ${batch.payee_name || ''}`.slice(0, 4000),
+            memo: jeMemo,
             approved: false,
             line: { items: [...g.items, cr] },
           },
