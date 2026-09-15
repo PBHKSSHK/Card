@@ -112,8 +112,10 @@ Deno.serve(async (req) => {
       if (!res.ok) throw new Error(`SuiteQL ${res.status}: ${(await res.text()).slice(0, 300)}`);
       return (await res.json()).items || [];
     };
-    // 權限 probe：POST 空 payload — 403 = role 冇 Create 權限 (view 都唔夠)；
-    // 400 validation error = 有權限 (空 payload 一定建唔到 record，所以安全)
+    // 權限 probe：POST 空 payload (一定建唔到 record，安全)。NetSuite 會先做 required-field
+    // validation (400 FIELD_PARAM_REQD) 先至 check Create 權限，所以呢個 probe 只捕捉到
+    // 「role 完全冇該 record 權限」嘅 403；「有 View 冇 Create」要真正 post 先會 403 —
+    // 嗰種情況由 postRecord → friendlyNsError 俾清楚指引。
     const nsProbe = async (type: 'vendorBill' | 'journalEntry'): Promise<{ status: number; text: string }> => {
       const url = `https://${host}.suitetalk.api.netsuite.com/services/rest/record/v1/${type}`;
       const header = await authHeader('POST', url, cfg as Record<string, string>);
@@ -236,11 +238,14 @@ Deno.serve(async (req) => {
 
     // dry_run：預先 probe Bills / JE 權限，preview 即刻話你知入數會唔會 403
     const warnings: string[] = [];
+    const probeInfo: Record<string, { status: number; text: string }> = {};
     if (dryRun && (batches || []).length > 0) {
       const probe = await nsProbe('vendorBill');
+      probeInfo.vendorBill = { status: probe.status, text: probe.text.slice(0, 400) };
       if (probe.status === 403) warnings.push(`Vendor Bill — ${friendlyNsError(probe.status, probe.text)}`);
       if ((batches || []).some((b: any) => b.is_prepayment)) {
         const p2 = await nsProbe('journalEntry');
+        probeInfo.journalEntry = { status: p2.status, text: p2.text.slice(0, 400) };
         if (p2.status === 403) warnings.push(`Journal Entry (預付款) — ${friendlyNsError(p2.status, p2.text)}`);
       }
     }
@@ -457,7 +462,7 @@ Deno.serve(async (req) => {
     }
 
     return new Response(
-      JSON.stringify({ ok: failed === 0, dry_run: dryRun, warnings, batches: (batches || []).length, created, duplicates, failed, results }, null, 2),
+      JSON.stringify({ ok: failed === 0, dry_run: dryRun, warnings, probe: probeInfo, batches: (batches || []).length, created, duplicates, failed, results }, null, 2),
       { headers: { ...CORS, 'Content-Type': 'application/json' } },
     );
   } catch (e) {
