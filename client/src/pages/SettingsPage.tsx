@@ -864,6 +864,7 @@ function UserManagement() {
     { key: "card", label: "Credit Card" },
     { key: "bank", label: "Bank" },
     { key: "claims", label: "Claims" },
+    { key: "projects", label: "Project Codes" },
   ];
 
   const roleBadge = (r: UserRoleOpt) => {
@@ -948,7 +949,7 @@ function UserManagement() {
                   <td className="py-2">
                     <div className="flex flex-wrap gap-1">
                       {MODULE_OPTS.map(m => {
-                        const mods = u.modules ?? ["card", "bank", "claims"];
+                        const mods = u.modules ?? ["card", "bank", "claims", "projects"];
                         const on = mods.includes(m.key);
                         // Bank 頁面/數據本身只限 owner/admin — BU 用戶剔咗都用唔到，所以鎖住
                         const disabled = m.key === "bank" && u.role === "bu_user";

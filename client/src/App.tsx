@@ -27,6 +27,7 @@ import ClaimDetailPage from "@/pages/ClaimDetailPage";
 import ApprovalInboxPage from "@/pages/ApprovalInboxPage";
 import ClaimJournalExport from "@/pages/ClaimJournalExport";
 import SettingsPage from "@/pages/SettingsPage";
+import ProjectCodesPage from "@/pages/ProjectCodesPage";
 import LoginPage from "@/pages/LoginPage";
 import NotFound from "@/pages/not-found";
 import { Loader2 } from "lucide-react";
@@ -36,7 +37,7 @@ import { Loader2 } from "lucide-react";
 function Gate({ component: C, superOnly, module }: {
   component: React.ComponentType;
   superOnly?: boolean;
-  module?: "card" | "bank" | "claims";
+  module?: "card" | "bank" | "claims" | "projects";
 }) {
   const { isSuperUser, hasModule, loading } = useAuth();
   if (loading) return null;
@@ -96,6 +97,8 @@ function AppRouter() {
         <Route path="/claims/new/:type">{() => <Gate module="claims" component={NewClaimPage} />}</Route>
         <Route path="/claims/:id/edit">{() => <Gate module="claims" component={NewClaimPage} />}</Route>
         <Route path="/claims/:id">{() => <Gate module="claims" component={ClaimDetailPage} />}</Route>
+        {/* Project Codes 模組 — sales 自助取 code；違規 / 規則 tab 只限 owner/admin */}
+        <Route path="/projects">{() => <Gate module="projects" component={ProjectCodesPage} />}</Route>
         {/* Settings — 只限 Owner/Admin (BU user 唔可以睇) */}
         <Route path="/settings">{() => <Gate superOnly component={SettingsPage} />}</Route>
         <Route component={NotFound} />

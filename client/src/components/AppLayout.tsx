@@ -4,7 +4,7 @@ import { useAuth } from "@/lib/auth";
 import {
   LayoutDashboard, Upload, GitCompareArrows, AlertTriangle, Package,
   FileDown, BarChart3, Settings, Sun, Moon, CreditCard, Menu, LogOut, User, Landmark,
-  Receipt, Inbox, HandCoins, ShieldCheck,
+  Receipt, Inbox, HandCoins, ShieldCheck, FolderKanban,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
@@ -234,6 +234,32 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             </div>
           </div>
 
+          )}
+
+          {/* Project Codes Module */}
+          {hasModule("projects") && (
+          <div className="mb-1">
+            <div className="px-3 py-1.5 text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider">Projects</div>
+            <div className="space-y-0.5">
+              <Link href="/projects">
+                <div
+                  data-testid="nav-project-codes"
+                  className={`
+                    flex items-center gap-2.5 px-3 py-2 rounded-md text-sm cursor-pointer
+                    transition-colors duration-150
+                    ${isNavActive("/projects")
+                      ? 'bg-sidebar-accent text-sidebar-foreground font-medium'
+                      : 'text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'
+                    }
+                  `}
+                  onClick={() => setSidebarOpen(false)}
+                >
+                  <FolderKanban size={16} strokeWidth={isNavActive("/projects") ? 2 : 1.5} />
+                  Project Codes
+                </div>
+              </Link>
+            </div>
+          </div>
           )}
 
           {/* Settings — 只限 Owner/Admin (BU user 唔顯示) */}

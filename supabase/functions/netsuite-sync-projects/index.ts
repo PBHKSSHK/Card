@@ -182,8 +182,10 @@ Deno.serve(async (req) => {
     }
 
     // 今次 run 冇觸及嘅 = NetSuite 已停用/刪除 → 收起佢 (picker 唔再出)
+    // 只收起 NetSuite 嚟嘅行 — Project Register 開嘅新 code (internal_id = null) 唔受影響
     const { data: deactRows } = await svc.from('ns_project_codes')
       .update({ is_active: false })
+      .not('internal_id', 'is', null)
       .or(`synced_at.lt.${runStart},synced_at.is.null`)
       .eq('is_active', true)
       .select('internal_id');
