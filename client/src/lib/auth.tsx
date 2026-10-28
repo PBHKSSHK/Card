@@ -5,8 +5,8 @@ import type { Session, User } from "@supabase/supabase-js";
 
 export type UserRole = "owner" | "admin" | "bu_user";
 
-export type AppModule = "card" | "bank" | "claims";
-export const ALL_MODULES: AppModule[] = ["card", "bank", "claims"];
+export type AppModule = "card" | "bank" | "claims" | "projects";
+export const ALL_MODULES: AppModule[] = ["card", "bank", "claims", "projects"];
 
 export interface UserProfile {
   user_id: string;
